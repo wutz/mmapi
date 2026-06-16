@@ -1,0 +1,6 @@
+{
+  "port": 8080,
+  "mode": "multi-fileset",
+  "device": "gpfs0",
+  "dataDir": "/var/lib/mmapi"
+}

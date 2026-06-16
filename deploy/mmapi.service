@@ -1,0 +1,14 @@
+[Unit]
+Description=mmapi - GPFS GUI API Proxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mmapi
+Environment=MMAPI_CONFIG=/etc/mmapi/config.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
