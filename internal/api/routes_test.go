@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,10 @@ func setupTestAPI(t *testing.T) (http.Handler, *auth.TokenStore) {
 	return router, tokenStore
 }
 
+func basicAuth(user, pass string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+}
+
 func TestCreateToken(t *testing.T) {
 	handler, _ := setupTestAPI(t)
 
@@ -48,42 +53,17 @@ func TestCreateToken(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp struct {
-		ID     string   `json:"id"`
-		Secret string   `json:"secret"`
-		AllowedFS []string `json:"allowedFs"`
-	}
+	var resp TokenInfo
 	json.Unmarshal(w.Body.Bytes(), &resp)
-
 	if resp.ID == "" || resp.Secret == "" {
 		t.Fatal("expected non-empty ID and Secret")
 	}
 }
 
-func TestListTokens(t *testing.T) {
+func TestScaleAPIRequiresAuth(t *testing.T) {
 	handler, _ := setupTestAPI(t)
 
-	// Create a token first
-	body := `{"allowedFs":["gpfs0"]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/tokens", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	// List tokens
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/tokens", nil)
-	w = httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestVolumeEndpointRequiresAuth(t *testing.T) {
-	handler, _ := setupTestAPI(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/volumes", nil)
+	req := httptest.NewRequest(http.MethodGet, "/scalemgmt/v2/filesystems", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -92,42 +72,77 @@ func TestVolumeEndpointRequiresAuth(t *testing.T) {
 	}
 }
 
-func TestVolumeEndpointWithAuth(t *testing.T) {
+func TestScaleAPIWithAuth(t *testing.T) {
 	handler, store := setupTestAPI(t)
 
 	token, _ := store.Create([]string{"gpfs0"}, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/volumes", nil)
-	req.Header.Set("Authorization", "Bearer "+token.Secret)
+	req := httptest.NewRequest(http.MethodGet, "/scalemgmt/v2/filesystems", nil)
+	req.Header.Set("Authorization", basicAuth("admin", token.Secret))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	// Will fail because gpfs commands aren't available in test, but auth should pass
-	// We check it's not 401
-	if w.Code == http.StatusUnauthorized {
-		t.Fatal("expected auth to pass")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestDeleteToken(t *testing.T) {
-	handler, _ := setupTestAPI(t)
+func TestGetCluster(t *testing.T) {
+	handler, store := setupTestAPI(t)
 
-	// Create
-	body := `{"allowedFs":["gpfs0"]}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/tokens", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	token, _ := store.Create([]string{"gpfs0"}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/scalemgmt/v2/cluster", nil)
+	req.Header.Set("Authorization", basicAuth("admin", token.Secret))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	var resp struct{ ID string `json:"id"` }
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
 
-	// Delete
-	req = httptest.NewRequest(http.MethodDelete, "/api/v1/tokens/"+resp.ID, nil)
-	w = httptest.NewRecorder()
+func TestGetFilesystemAccessDenied(t *testing.T) {
+	handler, store := setupTestAPI(t)
+
+	token, _ := store.Create([]string{"gpfs0"}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/scalemgmt/v2/filesystems/gpfs1", nil)
+	req.Header.Set("Authorization", basicAuth("admin", token.Secret))
+	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent && w.Code != http.StatusOK {
-		t.Fatalf("expected 200/204, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetFilesystemAllowed(t *testing.T) {
+	handler, store := setupTestAPI(t)
+
+	token, _ := store.Create([]string{"gpfs0"}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/scalemgmt/v2/filesystems/gpfs0", nil)
+	req.Header.Set("Authorization", basicAuth("admin", token.Secret))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestJobEndpoint(t *testing.T) {
+	handler, store := setupTestAPI(t)
+
+	token, _ := store.Create([]string{"gpfs0"}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/scalemgmt/v2/jobs/12345", nil)
+	req.Header.Set("Authorization", basicAuth("admin", token.Secret))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }

@@ -70,6 +70,10 @@ func (ts *TokenStore) Validate(secret string) (*Token, bool) {
 	return t, ok
 }
 
+func (ts *TokenStore) ValidateBasicAuth(user, pass string) (*Token, bool) {
+	return ts.Validate(pass)
+}
+
 func (ts *TokenStore) Delete(id string) error {
 	ts.mu.Lock()
 	for secret, t := range ts.tokens {
