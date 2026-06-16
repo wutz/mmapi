@@ -74,6 +74,19 @@ func (ts *TokenStore) ValidateBasicAuth(user, pass string) (*Token, bool) {
 	return ts.Validate(pass)
 }
 
+func (ts *TokenStore) ValidateToken(credentials, filesystem string) bool {
+	// credentials format: "user:password"
+	parts := strings.SplitN(credentials, ":", 2)
+	if len(parts) < 2 {
+		return false
+	}
+	token, ok := ts.Validate(parts[1])
+	if !ok {
+		return false
+	}
+	return contains(token.AllowedFS, filesystem)
+}
+
 func (ts *TokenStore) Delete(id string) error {
 	ts.mu.Lock()
 	for secret, t := range ts.tokens {

@@ -77,6 +77,17 @@ func (e *Executor) LinkFileset(ctx context.Context, device, filesetName, junctio
 	return err
 }
 
+func (e *Executor) CreateDirectory(ctx context.Context, filesystem, relativePath string) error {
+	// Get the mount point for the filesystem
+	mountPoint, err := e.GetMountPoint(ctx, filesystem)
+	if err != nil {
+		return err
+	}
+	fullPath := fmt.Sprintf("%s/%s", mountPoint, relativePath)
+	_, err = e.Run(ctx, "mkdir", "-p", fullPath)
+	return err
+}
+
 func (e *Executor) ListFilesets(ctx context.Context, device string) ([]FilesetInfo, error) {
 	out, err := e.Run(ctx, "mmlsfileset", device, "-Y")
 	if err != nil {

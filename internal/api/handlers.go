@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"sync/atomic"
 )
 
@@ -68,10 +70,11 @@ type FilesystemDetail struct {
 }
 
 type FilesystemMount struct {
-	MountPoint     string `json:"mountPoint"`
-	NodesMounted   int    `json:"nodesMounted,omitempty"`
-	Status         string `json:"status"`
-	AutomaticMount string `json:"automaticMountOption,omitempty"`
+	MountPoint       string `json:"mountPoint"`
+	NodesMounted     int    `json:"nodesMounted,omitempty"`
+	Status           string `json:"status"`
+	AutomaticMount   string `json:"automaticMountOption,omitempty"`
+	RemoteDeviceName string `json:"remoteDeviceName"`
 }
 
 func (a *API) ListFilesystems(ctx context.Context, input *struct{}) (*ListFilesystemsOutput, error) {
@@ -123,9 +126,10 @@ func (a *API) GetFilesystem(ctx context.Context, input *GetFilesystemInput) (*Ge
 		FilesystemName:    input.Filesystem,
 		DefaultMountPoint: mountPoint,
 		Mount: &FilesystemMount{
-			MountPoint:     mountPoint,
-			Status:         "mounted",
-			AutomaticMount: "yes",
+			MountPoint:       mountPoint,
+			Status:           "mounted",
+			AutomaticMount:   "yes",
+			RemoteDeviceName: input.Filesystem,
 		},
 	}}
 	return out, nil
@@ -273,8 +277,13 @@ func (a *API) LinkFileset(ctx context.Context, input *LinkFilesetInput) (*JobOut
 	}
 
 	if err := a.executor.LinkFileset(ctx, input.Filesystem, input.Fileset, input.Body.Path); err != nil {
-		slog.Error("link fileset failed", "error", err)
-		return scaleError(500, "failed to link fileset: "+err.Error()), nil
+		// Ignore "already linked" errors
+		if strings.Contains(err.Error(), "exit status 56") || strings.Contains(err.Error(), "already linked") || strings.Contains(err.Error(), "already exists") {
+			slog.Info("fileset already linked", "fileset", input.Fileset)
+		} else {
+			slog.Error("link fileset failed", "error", err)
+			return scaleError(500, "failed to link fileset: "+err.Error()), nil
+		}
 	}
 
 	jobID := jobCounter.Add(1)
@@ -385,3 +394,43 @@ func (a *API) GetJob(ctx context.Context, input *GetJobInput) (*GetJobOutput, er
 	out.Body.Jobs = []ScaleJob{{JobID: 0, Status: "COMPLETED"}}
 	return out, nil
 }
+
+type CreateDirectoryInput struct {
+	Filesystem   string `path:"filesystem"`
+	RelativePath string `path:"relativePath"`
+	Body         struct {
+		Uid   int    `json:"uid,omitempty"`
+		Gid   int    `json:"gid,omitempty"`
+		Perms string `json:"permissions,omitempty"`
+	}
+}
+
+func (a *API) CreateDirectory(ctx context.Context, input *CreateDirectoryInput) (*JobOutput, error) {
+	token := tokenFromCtx(ctx)
+	if err := a.tokens.CheckAccess(token, input.Filesystem, ""); err != nil {
+		return scaleError(403, err.Error()), nil
+	}
+
+	// Decode the URL-encoded path
+	relativePath := input.RelativePath
+	if decoded, err := url.PathUnescape(relativePath); err == nil {
+		relativePath = decoded
+	}
+
+	if err := a.executor.CreateDirectory(ctx, input.Filesystem, relativePath); err != nil {
+		// Ignore "already exists" errors
+		if strings.Contains(err.Error(), "File exists") || strings.Contains(err.Error(), "already exists") {
+			slog.Info("directory already exists", "path", relativePath)
+		} else {
+			slog.Error("create directory failed", "error", err)
+			return scaleError(500, "failed to create directory: "+err.Error()), nil
+		}
+	}
+
+	jobID := jobCounter.Add(1)
+	out := &JobOutput{}
+	out.Body.Status = ScaleStatus{Code: 202, Message: "created"}
+	out.Body.Jobs = []ScaleJob{{JobID: jobID, Status: "COMPLETED"}}
+	return out, nil
+}
+

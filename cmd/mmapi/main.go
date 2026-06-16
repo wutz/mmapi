@@ -7,14 +7,17 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +29,7 @@ import (
 	"github.com/wutz/mmapi/internal/api"
 	"github.com/wutz/mmapi/internal/auth"
 	"github.com/wutz/mmapi/internal/config"
+	"github.com/wutz/mmapi/internal/gpfs"
 )
 
 func main() {
@@ -35,16 +39,52 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create executor and token store early for middleware
+	executor := gpfs.NewExecutor()
+	tokenStore := auth.NewTokenStore(cfg)
+
 	router := chi.NewMux()
+
+	// Middleware: intercept directory creation before Huma processes the request
+	router.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "POST" && strings.Contains(r.URL.Path, "/directory/") &&
+				strings.HasPrefix(r.URL.Path, "/scalemgmt/v2/filesystems/") {
+				// Extract filesystem and relative path
+				parts := strings.SplitN(r.URL.Path[len("/scalemgmt/v2/filesystems/"):], "/directory/", 2)
+				if len(parts) == 2 {
+					filesystem := parts[0]
+					relativePath := parts[1]
+					if decoded, err := url.PathUnescape(relativePath); err == nil {
+						relativePath = decoded
+					}
+
+					if err := executor.CreateDirectory(r.Context(), filesystem, relativePath); err != nil {
+						if !strings.Contains(err.Error(), "File exists") && !strings.Contains(err.Error(), "already exists") {
+							slog.Error("create directory failed", "error", err)
+						}
+					}
+
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(202)
+					json.NewEncoder(w).Encode(map[string]any{
+						"status": map[string]any{"code": 202, "message": "created"},
+						"jobs":   []any{map[string]any{"jobId": 1, "status": "COMPLETED"}},
+					})
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+
 	router.Use(middleware.Logger)
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.RequestID)
-	router.Use(middleware.StripSlashes)
 
 	humaConfig := huma.DefaultConfig("mmapi", "1.0.0")
 	humaAPI := humachi.New(router, humaConfig)
 
-	tokenStore := auth.NewTokenStore(cfg)
 	authMiddleware := auth.Middleware(tokenStore)
 
 	api.RegisterRoutes(humaAPI, cfg, tokenStore, authMiddleware)

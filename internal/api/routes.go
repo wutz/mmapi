@@ -121,6 +121,13 @@ func RegisterRoutes(api huma.API, cfg *config.Config, tokens *auth.TokenStore, a
 		Middlewares: huma.Middlewares{humaAuth},
 	}, a.GetJob)
 
+	huma.Register(api, huma.Operation{
+		OperationID: "createDirectory",
+		Method:      http.MethodPost,
+		Path:        "/scalemgmt/v2/filesystems/{filesystem}/directory/{relativePath...}",
+		Middlewares: huma.Middlewares{humaAuth},
+	}, a.CreateDirectory)
+
 	// Admin token management
 	huma.Post(api, "/api/v1/tokens", a.CreateToken)
 	huma.Get(api, "/api/v1/tokens", a.ListTokens)
