@@ -59,6 +59,7 @@ type ListFilesystemsOutput struct {
 }
 
 type FilesystemDetail struct {
+	Name              string           `json:"name"`
 	FilesystemName    string           `json:"filesystemName"`
 	DefaultMountPoint string           `json:"defaultMountPoint"`
 	Mount             *FilesystemMount `json:"mount,omitempty"`
@@ -84,6 +85,7 @@ func (a *API) ListFilesystems(ctx context.Context, input *struct{}) (*ListFilesy
 			mountPoint = "/" + fs
 		}
 		out.Body.Filesystems = append(out.Body.Filesystems, FilesystemDetail{
+			Name:              fs,
 			FilesystemName:    fs,
 			DefaultMountPoint: mountPoint,
 		})
@@ -117,6 +119,7 @@ func (a *API) GetFilesystem(ctx context.Context, input *GetFilesystemInput) (*Ge
 	out := &GetFilesystemOutput{}
 	out.Body.Status = ScaleStatus{Code: 200, Message: ""}
 	out.Body.Filesystems = []FilesystemDetail{{
+		Name:              input.Filesystem,
 		FilesystemName:    input.Filesystem,
 		DefaultMountPoint: mountPoint,
 		Mount: &FilesystemMount{

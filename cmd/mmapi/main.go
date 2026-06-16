@@ -40,7 +40,6 @@ func main() {
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.RequestID)
 	router.Use(middleware.StripSlashes)
-	router.Use(api.ScaleErrorWrapper)
 
 	humaConfig := huma.DefaultConfig("mmapi", "1.0.0")
 	humaAPI := humachi.New(router, humaConfig)
