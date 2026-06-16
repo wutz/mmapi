@@ -1,0 +1,22 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gpfs-fileset
+provisioner: spectrumscale.csi.ibm.com
+parameters:
+  volBackendFs: fs0
+  clusterId: owningcluster
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-gpfs-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: gpfs-fileset
