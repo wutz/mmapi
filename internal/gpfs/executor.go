@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strings"
 )
@@ -27,6 +28,22 @@ func (e *Executor) Run(ctx context.Context, name string, args ...string) ([]byte
 		return nil, fmt.Errorf("%s failed: %w\nstderr: %s", name, err, stderr.String())
 	}
 	return stdout.Bytes(), nil
+}
+
+func (e *Executor) GetMountPoint(ctx context.Context, device string) (string, error) {
+	out, err := e.Run(ctx, "mmlsfs", device, "-Y")
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		fields := strings.Split(line, ":")
+		if len(fields) >= 8 && fields[6] == device && fields[7] == "defaultMountPoint" {
+			mp, _ := url.PathUnescape(fields[8])
+			return mp, nil
+		}
+	}
+	return "/" + device, nil
 }
 
 func (e *Executor) CreateFilesystem(ctx context.Context, fsName string, opts map[string]string) error {
@@ -121,13 +138,18 @@ func parseFilesetList(data []byte) ([]FilesetInfo, error) {
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
 		fields := strings.Split(line, ":")
-		if len(fields) < 12 || fields[0] == "mmlsfileset" {
+		if len(fields) < 12 {
 			continue
 		}
+		// Skip header line (field[2] == "HEADER")
+		if fields[2] == "HEADER" {
+			continue
+		}
+		path, _ := url.PathUnescape(fields[11])
 		results = append(results, FilesetInfo{
 			Name:   fields[7],
-			Status: fields[8],
-			Path:   fields[9],
+			Status: fields[10],
+			Path:   path,
 		})
 	}
 	return results, nil

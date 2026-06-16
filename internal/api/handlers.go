@@ -59,10 +59,18 @@ type ListFilesystemsOutput struct {
 }
 
 type FilesystemDetail struct {
-	FilesystemName    string `json:"filesystemName"`
-	DefaultMountPoint string `json:"defaultMountPoint"`
-	TotalDataInKB     int64  `json:"totalDataInKB,omitempty"`
-	FreeDataInKB      int64  `json:"freeDataInKB,omitempty"`
+	FilesystemName    string           `json:"filesystemName"`
+	DefaultMountPoint string           `json:"defaultMountPoint"`
+	Mount             *FilesystemMount `json:"mount,omitempty"`
+	TotalDataInKB     int64            `json:"totalDataInKB,omitempty"`
+	FreeDataInKB      int64            `json:"freeDataInKB,omitempty"`
+}
+
+type FilesystemMount struct {
+	MountPoint     string `json:"mountPoint"`
+	NodesMounted   int    `json:"nodesMounted,omitempty"`
+	Status         string `json:"status"`
+	AutomaticMount string `json:"automaticMountOption,omitempty"`
 }
 
 func (a *API) ListFilesystems(ctx context.Context, input *struct{}) (*ListFilesystemsOutput, error) {
@@ -71,9 +79,13 @@ func (a *API) ListFilesystems(ctx context.Context, input *struct{}) (*ListFilesy
 	out.Body.Status = ScaleStatus{Code: 200, Message: ""}
 
 	for _, fs := range token.AllowedFS {
+		mountPoint, err := a.executor.GetMountPoint(ctx, fs)
+		if err != nil {
+			mountPoint = "/" + fs
+		}
 		out.Body.Filesystems = append(out.Body.Filesystems, FilesystemDetail{
 			FilesystemName:    fs,
-			DefaultMountPoint: fmt.Sprintf("/gpfs/%s", fs),
+			DefaultMountPoint: mountPoint,
 		})
 	}
 	return out, nil
@@ -96,11 +108,22 @@ func (a *API) GetFilesystem(ctx context.Context, input *GetFilesystemInput) (*Ge
 		slog.Warn("access denied", "error", err)
 	}
 
+	mountPoint, err := a.executor.GetMountPoint(ctx, input.Filesystem)
+	if err != nil {
+		slog.Warn("failed to get mount point", "error", err)
+		mountPoint = "/" + input.Filesystem
+	}
+
 	out := &GetFilesystemOutput{}
 	out.Body.Status = ScaleStatus{Code: 200, Message: ""}
 	out.Body.Filesystems = []FilesystemDetail{{
 		FilesystemName:    input.Filesystem,
-		DefaultMountPoint: fmt.Sprintf("/gpfs/%s", input.Filesystem),
+		DefaultMountPoint: mountPoint,
+		Mount: &FilesystemMount{
+			MountPoint:     mountPoint,
+			Status:         "mounted",
+			AutomaticMount: "yes",
+		},
 	}}
 	return out, nil
 }
