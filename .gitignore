@@ -1,0 +1,7 @@
+/mmapi
+/dist
+*.exe
+*.test
+*.out
+.env
+local.db
