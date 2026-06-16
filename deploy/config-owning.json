@@ -2,5 +2,8 @@
   "port": 8443,
   "mode": "multi-fileset",
   "device": "fs0",
-  "dataDir": "/var/lib/mmapi"
+  "dataDir": "/var/lib/mmapi",
+  "tls": true,
+  "clusterId": 10186611170220879816,
+  "clusterName": "gn-10-243-145-103.cluster.local"
 }

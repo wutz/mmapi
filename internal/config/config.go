@@ -13,10 +13,15 @@ const (
 )
 
 type Config struct {
-	Port    int    `json:"port"`
-	Mode    Mode   `json:"mode"`
-	Device  string `json:"device"`
-	DataDir string `json:"dataDir"`
+	Port        int    `json:"port"`
+	Mode        Mode   `json:"mode"`
+	Device      string `json:"device"`
+	DataDir     string `json:"dataDir"`
+	TLS         bool   `json:"tls"`
+	CertFile    string `json:"certFile"`
+	KeyFile     string `json:"keyFile"`
+	ClusterID   uint64 `json:"clusterId"`
+	ClusterName string `json:"clusterName"`
 }
 
 func Load() (*Config, error) {

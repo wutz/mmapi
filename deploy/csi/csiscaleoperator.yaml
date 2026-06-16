@@ -2,32 +2,18 @@ apiVersion: csi.ibm.com/v1
 kind: CSIScaleOperator
 metadata:
   name: ibm-spectrum-scale-csi
-  namespace: ibm-spectrum-scale-csi
+  namespace: ibm-spectrum-scale-csi-driver
 spec:
   clusters:
-    # Owning cluster - where filesets are created
-    - id: owningcluster
+    - id: "10186611170220879816"
       primary:
-        primaryFS: fs0
-        primaryFset: ""
+        primaryFs: fs0
       restApi:
         - guiHost: "10.243.145.103"
-          guiPort: 8080
+          guiPort: 8443
       secrets: mmapi-owning-secret
-      secureSslMode: false
-
-    # Accessing cluster - k8s nodes mount from here
-    - id: accessingcluster
-      primary:
-        primaryFS: fs1
-        primaryFset: ""
-      restApi:
-        - guiHost: "10.243.144.51"
-          guiPort: 8080
-      secrets: mmapi-accessing-secret
       secureSslMode: false
 
   pluginNodeSelector:
     - key: scale
-      values:
-        - "true"
+      value: "true"
