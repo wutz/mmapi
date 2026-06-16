@@ -1,0 +1,6 @@
+{
+  "port": 8443,
+  "mode": "multi-fileset",
+  "device": "fs0",
+  "dataDir": "/var/lib/mmapi"
+}
