@@ -1,9 +1,0 @@
-{
-  "port": 8443,
-  "mode": "multi-fileset",
-  "device": "fs1",
-  "dataDir": "/var/lib/mmapi",
-  "tls": true,
-  "clusterId": 9389357423519444966,
-  "clusterName": "dev1.bz1.example.com"
-}
