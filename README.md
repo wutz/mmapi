@@ -82,29 +82,62 @@ curl -k -u admin:<token-secret> \
 
 ## Deployment
 
-### Systemd
+### 1. Deploy mmapi (Systemd)
 
 ```bash
+# Build linux binary
 make build-linux
-./deploy/deploy.sh root@<gpfs-node>
+
+# Deploy to GPFS nodes
+./deploy/deploy.sh root@<gpfs-node> ./mmapi ./deploy/config-owning.json
+
+# Create access token
+curl -X POST http://<gpfs-node>:8443/api/v1/tokens \
+  -H 'Content-Type: application/json' \
+  -d '{"allowedFs":["fs0"]}'
+# Save the returned secret for CSI configuration
 ```
 
-### GPFS CSI Integration
+### 2. Deploy GPFS CSI Driver
 
-See [deploy/csi/](deploy/csi/) for Kubernetes deployment manifests.
+```bash
+# Edit secrets with your token
+vim deploy/csi/secrets.yaml
 
-In the CSI driver config, point the GUI host to mmapi:
+# Edit CSIScaleOperator CR with your cluster ID, filesystem, and mmapi host
+vim deploy/csi/csiscaleoperator.yaml
 
-```yaml
-clusters:
-  - id: owningcluster
-    primary:
-      primaryFS: fs0
-    restApi:
-      - guiHost: "10.243.145.103"
-        guiPort: 8080
-    secrets: mmapi-owning-secret
+# Run install script
+./deploy/csi/install.sh
+
+# Check status
+kubectl -n ibm-spectrum-scale-csi-driver get pods
+kubectl -n ibm-spectrum-scale-csi-driver get csiscaleoperator
 ```
+
+### 3. Create StorageClass and Test
+
+```bash
+# Create StorageClass
+kubectl apply -f deploy/csi/storageclass.yaml
+
+# Deploy example pod with PVC
+kubectl apply -f deploy/csi/example-pod.yaml
+
+# Verify
+kubectl get pvc test-gpfs-pvc
+kubectl logs test-gpfs-pod
+```
+
+### CSI Manifests
+
+| File | Description |
+|------|-------------|
+| `deploy/csi/install.sh` | Automated CSI operator install script |
+| `deploy/csi/secrets.yaml` | Namespace and auth secret (edit token) |
+| `deploy/csi/csiscaleoperator.yaml` | CSI operator CR (edit cluster ID, host, filesystem) |
+| `deploy/csi/storageclass.yaml` | StorageClass for GPFS filesets |
+| `deploy/csi/example-pod.yaml` | Example Pod + PVC for testing |
 
 ## Development
 

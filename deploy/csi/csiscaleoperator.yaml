@@ -4,6 +4,8 @@ metadata:
   name: ibm-spectrum-scale-csi
   namespace: ibm-spectrum-scale-csi-driver
 spec:
+  spectrumScale: quay.io/ibm-spectrum-scale/ibm-spectrum-scale-csi-driver:v2.12.0
+
   clusters:
     - id: "10186611170220879816"
       primary:

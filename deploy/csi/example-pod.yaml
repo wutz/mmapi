@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-gpfs-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: gpfs-fileset
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-gpfs-pod
+spec:
+  containers:
+    - name: app
+      image: busybox
+      command: ["sh", "-c", "echo 'Hello from GPFS!' > /data/hello.txt && cat /data/hello.txt && sleep 3600"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: test-gpfs-pvc
+  nodeSelector:
+    scale: "true"
