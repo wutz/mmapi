@@ -16,12 +16,18 @@ spec:
       secrets: mmapi-owning-secret
       secureSslMode: false
 
+  # Map K8s node names to GPFS node names (FQDN)
+  nodeMapping:
+    - k8sNode: gn-10-243-145-103
+      spectrumscaleNode: gn-10-243-145-103.cluster.local
+    - k8sNode: gn-10-243-145-105
+      spectrumscaleNode: gn-10-243-145-105.cluster.local
+    - k8sNode: gn-10-243-145-106
+      spectrumscaleNode: gn-10-243-145-106.cluster.local
+
   pluginNodeSelector:
     - key: scale
       value: "true"
-
-  # Force controller pods (provisioner, attacher, etc.) to run on GPU nodes only
-  # where the DaemonSet driver pods are running with the CSI socket
   provisionerNodeSelector:
     - key: scale
       value: "true"
