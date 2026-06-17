@@ -19,3 +19,18 @@ spec:
   pluginNodeSelector:
     - key: scale
       value: "true"
+
+  # Force controller pods (provisioner, attacher, etc.) to run on GPU nodes only
+  # where the DaemonSet driver pods are running with the CSI socket
+  provisionerNodeSelector:
+    - key: scale
+      value: "true"
+  attacherNodeSelector:
+    - key: scale
+      value: "true"
+  resizerNodeSelector:
+    - key: scale
+      value: "true"
+  snapshotterNodeSelector:
+    - key: scale
+      value: "true"

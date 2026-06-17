@@ -52,6 +52,13 @@ func RegisterRoutes(api huma.API, cfg *config.Config, tokens *auth.TokenStore, a
 	}, a.GetCluster)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "getNodeHealthStates",
+		Method:      http.MethodGet,
+		Path:        "/scalemgmt/v2/nodes/{nodeName}/health/states",
+		Middlewares: huma.Middlewares{humaAuth},
+	}, a.GetNodeHealthStates)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "listFilesystems",
 		Method:      http.MethodGet,
 		Path:        "/scalemgmt/v2/filesystems",
