@@ -45,6 +45,13 @@ func RegisterRoutes(api huma.API, cfg *config.Config, tokens *auth.TokenStore, a
 	// scalemgmt/v2 compatible endpoints
 
 	huma.Register(api, huma.Operation{
+		OperationID: "getInfo",
+		Method:      http.MethodGet,
+		Path:        "/scalemgmt/v2/info",
+		Middlewares: huma.Middlewares{humaAuth},
+	}, a.GetInfo)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "getClusterInfo",
 		Method:      http.MethodGet,
 		Path:        "/scalemgmt/v2/cluster",

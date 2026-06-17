@@ -65,8 +65,17 @@ type FilesystemDetail struct {
 	FilesystemName    string           `json:"filesystemName"`
 	DefaultMountPoint string           `json:"defaultMountPoint"`
 	Mount             *FilesystemMount `json:"mount,omitempty"`
+	Quota             *QuotaInfo       `json:"quota,omitempty"`
 	TotalDataInKB     int64            `json:"totalDataInKB,omitempty"`
 	FreeDataInKB      int64            `json:"freeDataInKB,omitempty"`
+}
+
+type QuotaInfo struct {
+	QuotasAccountingEnabled string `json:"quotasAccountingEnabled,omitempty"`
+	QuotasEnforced          string `json:"quotasEnforced,omitempty"`
+	DefaultQuotasEnabled    string `json:"defaultQuotasEnabled,omitempty"`
+	PerfilesetQuotas        bool   `json:"perfilesetQuotas,omitempty"`
+	FilesetdfEnabled        bool   `json:"filesetdfEnabled,omitempty"`
 }
 
 type FilesystemMount struct {
@@ -130,6 +139,13 @@ func (a *API) GetFilesystem(ctx context.Context, input *GetFilesystemInput) (*Ge
 			Status:           "mounted",
 			AutomaticMount:   "yes",
 			RemoteDeviceName: input.Filesystem,
+		},
+		Quota: &QuotaInfo{
+			QuotasAccountingEnabled: "user;group;fileset",
+			QuotasEnforced:          "user;group;fileset",
+			DefaultQuotasEnabled:    "none",
+			PerfilesetQuotas:        true,
+			FilesetdfEnabled:        false,
 		},
 	}}
 	return out, nil
@@ -197,13 +213,21 @@ type GetFilesetOutput struct {
 }
 
 type FilesetDetail struct {
-	FilesetName    string `json:"filesetName"`
-	FilesystemName string `json:"filesystemName"`
-	Path           string `json:"path"`
-	Status         string `json:"status"`
-	InodeSpace     string `json:"inodeSpace,omitempty"`
-	MaxInodes      int64  `json:"maxInodes,omitempty"`
-	AllocInodes    int64  `json:"allocInodes,omitempty"`
+	FilesetName    string             `json:"filesetName"`
+	FilesystemName string             `json:"filesystemName"`
+	Path           string             `json:"path"`
+	Status         string             `json:"status"`
+	Config         FilesetConfigDetail `json:"config"`
+	InodeSpace     string             `json:"inodeSpace,omitempty"`
+	MaxInodes      int64              `json:"maxInodes,omitempty"`
+	AllocInodes    int64              `json:"allocInodes,omitempty"`
+}
+
+type FilesetConfigDetail struct {
+	FilesetName    string `json:"filesetName,omitempty"`
+	FilesystemName string `json:"filesystemName,omitempty"`
+	Path           string `json:"path,omitempty"`
+	Status         string `json:"status,omitempty"`
 }
 
 func (a *API) GetFileset(ctx context.Context, input *GetFilesetInput) (*GetFilesetOutput, error) {
@@ -219,13 +243,19 @@ func (a *API) GetFileset(ctx context.Context, input *GetFilesetInput) (*GetFiles
 
 	out := &GetFilesetOutput{}
 	out.Body.Status = ScaleStatus{Code: 200, Message: ""}
-	for _, f := range filesets {
+		for _, f := range filesets {
 		if f.Name == input.Fileset {
 			out.Body.Filesets = append(out.Body.Filesets, FilesetDetail{
 				FilesetName:    f.Name,
 				FilesystemName: input.Filesystem,
 				Path:           f.Path,
 				Status:         f.Status,
+				Config: FilesetConfigDetail{
+					FilesetName:    f.Name,
+					FilesystemName: input.Filesystem,
+					Path:           f.Path,
+					Status:         f.Status,
+				},
 			})
 			break
 		}
