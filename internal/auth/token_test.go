@@ -10,11 +10,8 @@ import (
 
 func newTestStore(t *testing.T) *TokenStore {
 	t.Helper()
-	dir := t.TempDir()
 	cfg := &config.Config{
-		Mode:    config.ModeMultiFileset,
-		DataDir: dir,
-		Device:  "gpfs0",
+		DataDir: t.TempDir(),
 	}
 	return NewTokenStore(cfg)
 }
@@ -44,7 +41,6 @@ func TestCreateAndValidateToken(t *testing.T) {
 
 func TestInvalidToken(t *testing.T) {
 	store := newTestStore(t)
-
 	_, ok := store.Validate("invalid")
 	if ok {
 		t.Fatal("expected invalid token")
@@ -53,43 +49,18 @@ func TestInvalidToken(t *testing.T) {
 
 func TestDeleteToken(t *testing.T) {
 	store := newTestStore(t)
-
 	token, _ := store.Create([]string{"gpfs0"}, nil)
 	if err := store.Delete(token.ID); err != nil {
 		t.Fatal(err)
 	}
-
 	_, ok := store.Validate(token.Secret)
 	if ok {
 		t.Fatal("expected token to be deleted")
 	}
 }
 
-func TestCheckAccessMultiFileset(t *testing.T) {
+func TestCheckAccessFS(t *testing.T) {
 	store := newTestStore(t)
-
-	token, _ := store.Create([]string{"gpfs0"}, []string{"fileset-a", "fileset-b"})
-
-	if err := store.CheckAccess(token, "gpfs0", "fileset-a"); err != nil {
-		t.Errorf("expected access to fileset-a: %v", err)
-	}
-	if err := store.CheckAccess(token, "gpfs0", "fileset-c"); err == nil {
-		t.Error("expected access denied for fileset-c")
-	}
-	if err := store.CheckAccess(token, "gpfs1", "fileset-a"); err == nil {
-		t.Error("expected access denied for gpfs1")
-	}
-}
-
-func TestCheckAccessMultiFS(t *testing.T) {
-	dir := t.TempDir()
-	cfg := &config.Config{
-		Mode:    config.ModeMultiFS,
-		DataDir: dir,
-		Device:  "gpfs0",
-	}
-	store := NewTokenStore(cfg)
-
 	token, _ := store.Create([]string{"gpfs0", "gpfs1"}, nil)
 
 	if err := store.CheckAccess(token, "gpfs0", ""); err != nil {
@@ -103,24 +74,30 @@ func TestCheckAccessMultiFS(t *testing.T) {
 	}
 }
 
+func TestCheckAccessFileset(t *testing.T) {
+	store := newTestStore(t)
+	token, _ := store.Create([]string{"gpfs0"}, []string{"fileset-a", "fileset-b"})
+
+	if err := store.CheckAccess(token, "gpfs0", "fileset-a"); err != nil {
+		t.Errorf("expected access to fileset-a: %v", err)
+	}
+	if err := store.CheckAccess(token, "gpfs0", "fileset-c"); err == nil {
+		t.Error("expected access denied for fileset-c")
+	}
+}
+
 func TestTokenPersistence(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &config.Config{
-		Mode:    config.ModeMultiFileset,
-		DataDir: dir,
-		Device:  "gpfs0",
-	}
+	cfg := &config.Config{DataDir: dir}
 
 	store1 := NewTokenStore(cfg)
 	token, _ := store1.Create([]string{"gpfs0"}, []string{"fs-a"})
 
-	// Check file was written
 	path := filepath.Join(dir, "tokens.json")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("expected tokens.json to exist")
 	}
 
-	// Load from a new store instance
 	store2 := NewTokenStore(cfg)
 	got, ok := store2.Validate(token.Secret)
 	if !ok {
@@ -133,7 +110,6 @@ func TestTokenPersistence(t *testing.T) {
 
 func TestListTokens(t *testing.T) {
 	store := newTestStore(t)
-
 	store.Create([]string{"gpfs0"}, nil)
 	store.Create([]string{"gpfs1"}, nil)
 

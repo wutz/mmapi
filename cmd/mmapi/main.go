@@ -13,23 +13,15 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/danielgtaylor/huma/v2"
-	"github.com/danielgtaylor/huma/v2/adapters/humachi"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-
-	"github.com/wutz/mmapi/internal/api"
 	"github.com/wutz/mmapi/internal/auth"
 	"github.com/wutz/mmapi/internal/config"
-	"github.com/wutz/mmapi/internal/gpfs"
+	"github.com/wutz/mmapi/internal/proxy"
 )
 
 func main() {
@@ -39,59 +31,53 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create executor and token store early for middleware
-	executor := gpfs.NewExecutor()
 	tokenStore := auth.NewTokenStore(cfg)
 
-	router := chi.NewMux()
+	mux := http.NewServeMux()
 
-	// Middleware: intercept directory creation before Huma processes the request
-	router.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "POST" && strings.Contains(r.URL.Path, "/directory/") &&
-				strings.HasPrefix(r.URL.Path, "/scalemgmt/v2/filesystems/") {
-				// Extract filesystem and relative path
-				parts := strings.SplitN(r.URL.Path[len("/scalemgmt/v2/filesystems/"):], "/directory/", 2)
-				if len(parts) == 2 {
-					filesystem := parts[0]
-					relativePath := parts[1]
-					if decoded, err := url.PathUnescape(relativePath); err == nil {
-						relativePath = decoded
-					}
+	// Proxy all /scalemgmt/ requests to the real GPFS GUI
+	scaleProxy := proxy.New(cfg, tokenStore)
+	mux.Handle("/scalemgmt/", scaleProxy)
 
-					if err := executor.CreateDirectory(r.Context(), filesystem, relativePath); err != nil {
-						if !strings.Contains(err.Error(), "File exists") && !strings.Contains(err.Error(), "already exists") {
-							slog.Error("create directory failed", "error", err)
-						}
-					}
-
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(202)
-					json.NewEncoder(w).Encode(map[string]any{
-						"status": map[string]any{"code": 202, "message": "created"},
-						"jobs":   []any{map[string]any{"jobId": 1, "status": "COMPLETED"}},
-					})
-					return
-				}
-			}
-			next.ServeHTTP(w, r)
-		})
+	// Token management API
+	mux.HandleFunc("POST /api/v1/tokens", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			AllowedFS      []string `json:"allowedFs"`
+			AllowedFileset []string `json:"allowedFileset,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+		token, err := tokenStore.Create(body.AllowedFS, body.AllowedFileset)
+		if err != nil {
+			http.Error(w, `{"error":"failed to create token"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(token)
 	})
 
-	router.Use(middleware.Logger)
-	router.Use(middleware.Recoverer)
-	router.Use(middleware.RequestID)
+	mux.HandleFunc("GET /api/v1/tokens", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tokenStore.List())
+	})
 
-	humaConfig := huma.DefaultConfig("mmapi", "1.0.0")
-	humaAPI := humachi.New(router, humaConfig)
+	mux.HandleFunc("DELETE /api/v1/tokens/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if err := tokenStore.Delete(id); err != nil {
+			http.Error(w, `{"error":"failed to delete token"}`, http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 
-	authMiddleware := auth.Middleware(tokenStore)
-
-	api.RegisterRoutes(humaAPI, cfg, tokenStore, authMiddleware)
+	// Logging middleware
+	handler := logMiddleware(mux)
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Port),
-		Handler: router,
+		Handler: handler,
 	}
 
 	go func() {
@@ -101,13 +87,13 @@ func main() {
 				slog.Error("failed to setup TLS", "error", err)
 				os.Exit(1)
 			}
-			slog.Info("starting HTTPS server", "port", cfg.Port)
+			slog.Info("starting HTTPS server", "port", cfg.Port, "gui", cfg.GuiURL)
 			if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
 				slog.Error("server error", "error", err)
 				os.Exit(1)
 			}
 		} else {
-			slog.Info("starting HTTP server", "port", cfg.Port)
+			slog.Info("starting HTTP server", "port", cfg.Port, "gui", cfg.GuiURL)
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				slog.Error("server error", "error", err)
 				os.Exit(1)
@@ -125,28 +111,48 @@ func main() {
 	slog.Info("server stopped")
 }
 
+func logMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rec, r)
+		slog.Info("request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"duration", time.Since(start).String(),
+			"from", r.RemoteAddr,
+		)
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
 func ensureTLSCerts(cfg *config.Config) (string, string, error) {
 	certFile := cfg.CertFile
 	keyFile := cfg.KeyFile
-
 	if certFile == "" {
 		certFile = filepath.Join(cfg.DataDir, "tls.crt")
 	}
 	if keyFile == "" {
 		keyFile = filepath.Join(cfg.DataDir, "tls.key")
 	}
-
 	if _, err := os.Stat(certFile); err == nil {
 		return certFile, keyFile, nil
 	}
-
 	slog.Info("generating self-signed TLS certificate")
-
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return "", "", err
 	}
-
 	template := x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "mmapi"},
@@ -155,31 +161,17 @@ func ensureTLSCerts(cfg *config.Config) (string, string, error) {
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
-
 	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
 	if err != nil {
 		return "", "", err
 	}
-
 	os.MkdirAll(filepath.Dir(certFile), 0o755)
-
-	certOut, err := os.Create(certFile)
-	if err != nil {
-		return "", "", err
-	}
+	certOut, _ := os.Create(certFile)
 	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 	certOut.Close()
-
-	keyBytes, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return "", "", err
-	}
-	keyOut, err := os.OpenFile(keyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return "", "", err
-	}
+	keyBytes, _ := x509.MarshalECPrivateKey(key)
+	keyOut, _ := os.OpenFile(keyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
 	keyOut.Close()
-
 	return certFile, keyFile, nil
 }

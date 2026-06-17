@@ -113,10 +113,8 @@ func (ts *TokenStore) CheckAccess(token *Token, fs string, fileset string) error
 	if !contains(token.AllowedFS, fs) {
 		return fmt.Errorf("access denied: filesystem %q not allowed", fs)
 	}
-	if ts.cfg.Mode == config.ModeMultiFileset && fileset != "" {
-		if len(token.AllowedFileset) > 0 && !contains(token.AllowedFileset, fileset) {
-			return fmt.Errorf("access denied: fileset %q not allowed", fileset)
-		}
+	if fileset != "" && len(token.AllowedFileset) > 0 && !contains(token.AllowedFileset, fileset) {
+		return fmt.Errorf("access denied: fileset %q not allowed", fileset)
 	}
 	return nil
 }

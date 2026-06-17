@@ -1,9 +1,8 @@
 {
   "port": 8443,
-  "mode": "multi-fileset",
-  "device": "fs0",
   "dataDir": "/var/lib/mmapi",
   "tls": true,
-  "clusterId": 10186611170220879816,
-  "clusterName": "gn-10-243-145-103.cluster.local"
+  "guiUrl": "https://127.0.0.1:443",
+  "guiUsername": "admin",
+  "guiPassword": "Admin@123"
 }

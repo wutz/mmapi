@@ -5,31 +5,22 @@ import (
 	"os"
 )
 
-type Mode string
-
-const (
-	ModeMultiFS      Mode = "multi-fs"
-	ModeMultiFileset Mode = "multi-fileset"
-)
-
 type Config struct {
 	Port        int    `json:"port"`
-	Mode        Mode   `json:"mode"`
-	Device      string `json:"device"`
 	DataDir     string `json:"dataDir"`
 	TLS         bool   `json:"tls"`
 	CertFile    string `json:"certFile"`
 	KeyFile     string `json:"keyFile"`
-	ClusterID   uint64 `json:"clusterId"`
-	ClusterName string `json:"clusterName"`
+	GuiURL      string `json:"guiUrl"`
+	GuiUsername string `json:"guiUsername"`
+	GuiPassword string `json:"guiPassword"`
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		Port:    8080,
-		Mode:    ModeMultiFileset,
-		Device:  "gpfs0",
+		Port:    8443,
 		DataDir: "/var/lib/mmapi",
+		TLS:     true,
 	}
 
 	path := os.Getenv("MMAPI_CONFIG")
