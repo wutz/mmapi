@@ -1,4 +1,5 @@
 /mmapi
+/mmctl
 /dist
 *.exe
 *.test
