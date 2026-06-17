@@ -69,14 +69,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Access control: extract filesystem from URL and check permission
-		fs := extractFilesystem(r.URL.Path)
+		// Access control: extract filesystem and fileset from URL
+		fs, fileset := extractFsAndFileset(r.URL.Path)
 		if fs != "" {
-			if err := h.tokens.CheckAccess(token, fs, ""); err != nil {
-				slog.Warn("access denied", "fs", fs, "token", token.ID, "error", err)
+			if err := h.tokens.CheckAccess(token, fs, fileset); err != nil {
+				slog.Warn("access denied", "fs", fs, "fileset", fileset, "token", token.ID, "error", err)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
-				w.Write([]byte(`{"status":{"code":403,"message":"access denied"}}`))
+				w.Write([]byte(`{"status":{"code":403,"message":"` + err.Error() + `"}}`))
 				return
 			}
 		}
@@ -114,16 +114,22 @@ func (h *handler) authenticate(r *http.Request) *auth.Token {
 	return nil
 }
 
-// extractFilesystem extracts the filesystem name from a scalemgmt URL path.
-// e.g., /scalemgmt/v2/filesystems/fs0/filesets -> "fs0"
-func extractFilesystem(path string) string {
+// extractFsAndFileset extracts filesystem and fileset names from a scalemgmt URL path.
+// e.g., /scalemgmt/v2/filesystems/fs0/filesets/myfset -> "fs0", "myfset"
+//       /scalemgmt/v2/filesystems/fs0 -> "fs0", ""
+func extractFsAndFileset(path string) (string, string) {
 	const prefix = "/scalemgmt/v2/filesystems/"
 	if !strings.HasPrefix(path, prefix) {
-		return ""
+		return "", ""
 	}
 	rest := path[len(prefix):]
-	if idx := strings.Index(rest, "/"); idx != -1 {
-		return rest[:idx]
+	parts := strings.SplitN(rest, "/", 3)
+	fs := parts[0]
+	fileset := ""
+	if len(parts) >= 3 && parts[1] == "filesets" {
+		// /filesystems/{fs}/filesets/{fileset}[/...]
+		fsetParts := strings.SplitN(parts[2], "/", 2)
+		fileset = fsetParts[0]
 	}
-	return rest
+	return fs, fileset
 }
