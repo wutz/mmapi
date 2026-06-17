@@ -1,16 +1,16 @@
 # mmapi
 
-GPFS multi-tenant API proxy for CSI support. Transparently proxies the IBM Storage Scale GUI REST API (`/scalemgmt/v2/`) with token-based per-filesystem access control.
+GPFS multi-tenant API proxy for CSI support. Transparently proxies the IBM Storage Scale GUI REST API (`/scalemgmt/v2/`) with token-based per-filesystem and per-fileset access control.
 
 ## Architecture
 
 ```
-CSI Driver → mmapi (token auth + FS access control) → GPFS GUI (real API) → GPFS Cluster
+CSI Driver → mmapi (token auth + FS/fileset access control) → GPFS GUI (real API) → GPFS Cluster
 ```
 
 mmapi does NOT implement any GPFS commands. It is a pure reverse proxy that:
 1. Authenticates requests using mmapi tokens (via Basic Auth)
-2. Checks if the token has access to the requested filesystem
+2. Checks if the token has access to the requested filesystem and fileset
 3. Forwards the request to the real GPFS GUI with admin credentials
 4. Returns the GUI's response unmodified
 
@@ -26,10 +26,15 @@ make build-linux
 # Deploy mmapi proxy
 ./deploy/deploy.sh root@<gpfs-node> ./mmapi ./deploy/config-owning.json
 
-# Create an access token
+# Create an access token (filesystem-level)
 curl -sk -X POST https://<host>:8443/api/v1/tokens \
   -H 'Content-Type: application/json' \
   -d '{"allowedFs":["fs0"]}'
+
+# Create a token with fileset restriction (optional)
+curl -sk -X POST https://<host>:8443/api/v1/tokens \
+  -H 'Content-Type: application/json' \
+  -d '{"allowedFs":["fs0"],"allowedFileset":["pvc-xxx","pvc-yyy"]}'
 
 # Test via mmctl
 export MMAPI_URL=https://<host>:8443
@@ -68,13 +73,27 @@ mmctl fileset list fs0
 
 All `/scalemgmt/v2/` requests are proxied to the GPFS GUI. Authentication uses Basic Auth where the password is an mmapi token.
 
+### Access Control
+
+Tokens restrict access at two levels:
+- **Filesystem level** (`allowedFs`): Only requests targeting allowed filesystems are forwarded
+- **Fileset level** (`allowedFileset`, optional): Only requests targeting allowed filesets are forwarded. If empty, all filesets in allowed filesystems are accessible.
+
 ### Token Management
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/tokens` | Create token (`{"allowedFs":["fs0"]}`) |
+| POST | `/api/v1/tokens` | Create token |
 | GET | `/api/v1/tokens` | List tokens |
 | DELETE | `/api/v1/tokens/{id}` | Delete token |
+
+**Create token request body:**
+```json
+{
+  "allowedFs": ["fs0"],
+  "allowedFileset": ["pvc-xxx", "pvc-yyy"]
+}
+```
 
 ## mmctl CLI
 
