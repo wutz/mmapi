@@ -13,13 +13,15 @@ import (
 )
 
 var (
-	apiURL   string
-	apiToken string
+	apiURL     string
+	apiToken   string
+	adminToken string
 )
 
 func init() {
 	apiURL = os.Getenv("MMAPI_URL")
 	apiToken = os.Getenv("MMAPI_TOKEN")
+	adminToken = os.Getenv("MMAPI_ADMIN_TOKEN")
 	if apiURL == "" {
 		apiURL = "https://localhost:8443"
 	}
@@ -76,8 +78,9 @@ Commands:
   token delete <id>          Delete token
 
 Environment:
-  MMAPI_URL    mmapi server URL (default: https://localhost:8443)
-  MMAPI_TOKEN  mmapi access token`)
+  MMAPI_URL         mmapi server URL (default: https://localhost:8443)
+  MMAPI_TOKEN       mmapi access token (for /scalemgmt/ API)
+  MMAPI_ADMIN_TOKEN mmapi admin token (for /api/v1/tokens management)`)
 }
 
 // HTTP client
@@ -104,6 +107,35 @@ func doRequest(method, path string, body string) ([]byte, int, error) {
 
 	if apiToken != "" {
 		req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+apiToken)))
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	return data, resp.StatusCode, err
+}
+
+func doAdminRequest(method, path string, body string) ([]byte, int, error) {
+	url := apiURL + path
+	var bodyReader io.Reader
+	if body != "" {
+		bodyReader = strings.NewReader(body)
+	}
+
+	req, err := http.NewRequest(method, url, bodyReader)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if adminToken != "" {
+		req.Header.Set("Authorization", "Bearer "+adminToken)
 	}
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
@@ -341,7 +373,7 @@ func handleToken(args []string) {
 			"allowedFs":      fsList,
 			"allowedFileset": fsetList,
 		})
-		data, code, err := doRequest("POST", "/api/v1/tokens", string(body))
+		data, code, err := doAdminRequest("POST", "/api/v1/tokens", string(body))
 		if err != nil {
 			fatal(err)
 		}
@@ -351,7 +383,7 @@ func handleToken(args []string) {
 		prettyPrint(data)
 
 	case "list":
-		data, code, err := doRequest("GET", "/api/v1/tokens", "")
+		data, code, err := doAdminRequest("GET", "/api/v1/tokens", "")
 		if err != nil {
 			fatal(err)
 		}
@@ -375,7 +407,7 @@ func handleToken(args []string) {
 		if len(args) < 2 {
 			fatal(fmt.Errorf("usage: mmctl token delete <id>"))
 		}
-		_, code, err := doRequest("DELETE", "/api/v1/tokens/"+args[1], "")
+		_, code, err := doAdminRequest("DELETE", "/api/v1/tokens/"+args[1], "")
 		if err != nil {
 			fatal(err)
 		}

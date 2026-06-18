@@ -39,8 +39,24 @@ func main() {
 	scaleProxy := proxy.New(cfg, tokenStore)
 	mux.Handle("/scalemgmt/", scaleProxy)
 
-	// Token management API
-	mux.HandleFunc("POST /api/v1/tokens", func(w http.ResponseWriter, r *http.Request) {
+	// Admin auth middleware for token management
+	adminAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if cfg.AdminToken != "" {
+				authHeader := r.Header.Get("Authorization")
+				if authHeader != "Bearer "+cfg.AdminToken {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					w.Write([]byte(`{"error":"admin authentication required"}`))
+					return
+				}
+			}
+			next(w, r)
+		}
+	}
+
+	// Token management API (requires admin token)
+	mux.HandleFunc("POST /api/v1/tokens", adminAuth(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			AllowedFS      []string `json:"allowedFs"`
 			AllowedFileset []string `json:"allowedFileset,omitempty"`
@@ -56,21 +72,21 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(token)
-	})
+	}))
 
-	mux.HandleFunc("GET /api/v1/tokens", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/tokens", adminAuth(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(tokenStore.List())
-	})
+	}))
 
-	mux.HandleFunc("DELETE /api/v1/tokens/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("DELETE /api/v1/tokens/{id}", adminAuth(func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if err := tokenStore.Delete(id); err != nil {
 			http.Error(w, `{"error":"failed to delete token"}`, http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
-	})
+	}))
 
 	// Logging middleware
 	handler := logMiddleware(mux)

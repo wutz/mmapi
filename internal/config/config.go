@@ -14,6 +14,7 @@ type Config struct {
 	GuiURL      string `json:"guiUrl"`
 	GuiUsername string `json:"guiUsername"`
 	GuiPassword string `json:"guiPassword"`
+	AdminToken  string `json:"adminToken"`
 }
 
 func Load() (*Config, error) {
