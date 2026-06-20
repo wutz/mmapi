@@ -5,10 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/wutz/mmapi/internal/config"
@@ -19,6 +17,27 @@ type Token struct {
 	Secret        string   `json:"secret"`
 	AllowedFS     []string `json:"allowedFs"`
 	AllowedFileset []string `json:"allowedFileset,omitempty"`
+}
+
+// TokenInfo is the public view of a token returned by the management API. It
+// intentionally omits the Secret so that listing tokens does not leak the
+// credentials of every tenant.
+type TokenInfo struct {
+	ID             string   `json:"id"`
+	AllowedFS      []string `json:"allowedFs"`
+	AllowedFileset []string `json:"allowedFileset,omitempty"`
+}
+
+// ErrInvalidTokenRequest is returned by Create for malformed token requests
+// (e.g. no allowed filesystems), which the caller can map to a 400 response.
+var ErrInvalidTokenRequest = fmt.Errorf("invalid token request")
+
+func (t *Token) Info() *TokenInfo {
+	return &TokenInfo{
+		ID:             t.ID,
+		AllowedFS:      t.AllowedFS,
+		AllowedFileset: t.AllowedFileset,
+	}
 }
 
 type TokenStore struct {
@@ -39,6 +58,9 @@ func NewTokenStore(cfg *config.Config) *TokenStore {
 }
 
 func (ts *TokenStore) Create(allowedFS []string, allowedFileset []string) (*Token, error) {
+	if len(allowedFS) == 0 {
+		return nil, ErrInvalidTokenRequest
+	}
 	secret, err := generateSecret()
 	if err != nil {
 		return nil, err
@@ -70,23 +92,6 @@ func (ts *TokenStore) Validate(secret string) (*Token, bool) {
 	return t, ok
 }
 
-func (ts *TokenStore) ValidateBasicAuth(user, pass string) (*Token, bool) {
-	return ts.Validate(pass)
-}
-
-func (ts *TokenStore) ValidateToken(credentials, filesystem string) bool {
-	// credentials format: "user:password"
-	parts := strings.SplitN(credentials, ":", 2)
-	if len(parts) < 2 {
-		return false
-	}
-	token, ok := ts.Validate(parts[1])
-	if !ok {
-		return false
-	}
-	return contains(token.AllowedFS, filesystem)
-}
-
 func (ts *TokenStore) Delete(id string) error {
 	ts.mu.Lock()
 	for secret, t := range ts.tokens {
@@ -99,12 +104,12 @@ func (ts *TokenStore) Delete(id string) error {
 	return ts.save()
 }
 
-func (ts *TokenStore) List() []*Token {
+func (ts *TokenStore) List() []*TokenInfo {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
-	var result []*Token
+	var result []*TokenInfo
 	for _, t := range ts.tokens {
-		result = append(result, t)
+		result = append(result, t.Info())
 	}
 	return result
 }
@@ -147,28 +152,16 @@ func (ts *TokenStore) save() error {
 	if err != nil {
 		return err
 	}
-	os.MkdirAll(filepath.Dir(ts.path), 0o755)
-	return os.WriteFile(ts.path, data, 0o600)
-}
-
-func Middleware(store *TokenStore) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
-				http.Error(w, `{"error":"missing authorization"}`, http.StatusUnauthorized)
-				return
-			}
-			secret := strings.TrimPrefix(authHeader, "Bearer ")
-			token, ok := store.Validate(secret)
-			if !ok {
-				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
-				return
-			}
-			r = r.WithContext(WithToken(r.Context(), token))
-			next.ServeHTTP(w, r)
-		})
+	if err := os.MkdirAll(filepath.Dir(ts.path), 0o755); err != nil {
+		return err
 	}
+	// Write to a temp file and rename for an atomic replacement so a crash
+	// mid-write cannot corrupt tokens.json.
+	tmp := ts.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, ts.path)
 }
 
 func generateSecret() (string, error) {

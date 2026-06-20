@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/wutz/mmapi/internal/auth"
@@ -164,6 +165,58 @@ func TestProxyNonScalemgmtPath(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestProxyCreateFilesetBypassDenied(t *testing.T) {
+	_, proxy, tokens := setupTestProxy(t)
+
+	// Token restricted to a single fileset must NOT be able to create a
+	// differently-named fileset via the create endpoint (body carries the name).
+	token, _ := tokens.Create([]string{"fs0"}, []string{"pvc-aaa"})
+
+	req := httptest.NewRequest("POST", "/scalemgmt/v2/filesystems/fs0/filesets",
+		strings.NewReader(`{"filesetName":"pvc-evil","inodeSpace":"new"}`))
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token.Secret)))
+	w := httptest.NewRecorder()
+	proxy.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 (bypass blocked), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProxyCreateFilesetAllowedFileset(t *testing.T) {
+	_, proxy, tokens := setupTestProxy(t)
+
+	token, _ := tokens.Create([]string{"fs0"}, []string{"pvc-aaa"})
+
+	req := httptest.NewRequest("POST", "/scalemgmt/v2/filesystems/fs0/filesets",
+		strings.NewReader(`{"filesetName":"pvc-aaa","inodeSpace":"new"}`))
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token.Secret)))
+	w := httptest.NewRecorder()
+	proxy.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProxySetQuotaBypassDenied(t *testing.T) {
+	_, proxy, tokens := setupTestProxy(t)
+
+	// quota set names the target fileset in the body (objectName), so a token
+	// restricted to pvc-aaa must not set quota on pvc-evil.
+	token, _ := tokens.Create([]string{"fs0"}, []string{"pvc-aaa"})
+
+	req := httptest.NewRequest("POST", "/scalemgmt/v2/filesystems/fs0/quotas",
+		strings.NewReader(`{"operationType":"setQuota","quotaType":"fileset","objectName":"pvc-evil","blockSoftLimit":"1","blockHardLimit":"2"}`))
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token.Secret)))
+	w := httptest.NewRecorder()
+	proxy.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 (quota bypass blocked), got %d: %s", w.Code, w.Body.String())
 	}
 }
 

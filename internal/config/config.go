@@ -15,6 +15,10 @@ type Config struct {
 	GuiUsername string `json:"guiUsername"`
 	GuiPassword string `json:"guiPassword"`
 	AdminToken  string `json:"adminToken"`
+	// GuiVerifyTLS controls whether the upstream GPFS GUI TLS certificate is
+	// verified. Defaults to false for compatibility with self-signed GUI certs;
+	// enable in trusted environments to prevent man-in-the-middle attacks.
+	GuiVerifyTLS bool `json:"guiVerifyTLS"`
 }
 
 func Load() (*Config, error) {

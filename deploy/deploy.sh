@@ -17,4 +17,4 @@ scp ./deploy/mmapi.service "${HOST}:/etc/systemd/system/mmapi.service"
 ssh "$HOST" "systemctl daemon-reload && systemctl enable mmapi && systemctl restart mmapi"
 ssh "$HOST" "systemctl status mmapi --no-pager"
 
-echo "Done. mmapi running on ${HOST}:8080"
+echo "Done. mmapi running on ${HOST} (see ${CONFIG} for the port)"

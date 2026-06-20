@@ -1,8 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -32,7 +35,7 @@ func New(cfg *config.Config, tokens *auth.TokenStore) http.Handler {
 				[]byte(cfg.GuiUsername+":"+cfg.GuiPassword)))
 		},
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: !cfg.GuiVerifyTLS},
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			// Log response status for debugging
@@ -69,9 +72,18 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Access control: extract filesystem and fileset from URL
+		// Access control: extract filesystem and fileset from URL and request body
 		fs, fileset := extractFsAndFileset(r.URL.Path)
 		if fs != "" {
+			// For some write operations the target fileset is named in the
+			// request body rather than the URL path (create fileset, set
+			// quota). Read and inspect the body so fileset-level restrictions
+			// cannot be bypassed by these endpoints.
+			if fileset == "" && r.Body != nil && r.Method == http.MethodPost {
+				if bf, ok := filesetFromBody(r, h.tokens, token); ok {
+					fileset = bf
+				}
+			}
 			if err := h.tokens.CheckAccess(token, fs, fileset); err != nil {
 				slog.Warn("access denied", "fs", fs, "fileset", fileset, "token", token.ID, "error", err)
 				w.Header().Set("Content-Type", "application/json")
@@ -112,6 +124,59 @@ func (h *handler) authenticate(r *http.Request) *auth.Token {
 	}
 
 	return nil
+}
+
+// filesetFromBody inspects the JSON request body for a fileset name on endpoints
+// where the target fileset is not present in the URL path:
+//   - POST /filesystems/{fs}/filesets        -> body field "filesetName"
+//   - POST /filesystems/{fs}/quotas          -> body field "objectName" (quotaType=fileset)
+//
+// It reads the body but restores it (via NopCloser over a bytes.Reader) so the
+// proxy can still forward it. Returns the discovered fileset name and true when
+// a name was found; ("", false) leaves the caller's fileset untouched.
+func filesetFromBody(r *http.Request, store *auth.TokenStore, token *auth.Token) (string, bool) {
+	// Only the parts after {fs} matter: "filesets" (create) or "quotas" (set).
+	const prefix = "/scalemgmt/v2/filesystems/"
+	rest := r.URL.Path[len(prefix):]
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) < 2 {
+		return "", false
+	}
+	tail := strings.SplitN(parts[1], "/", 2)[0]
+	if tail != "filesets" && tail != "quotas" {
+		return "", false
+	}
+
+	body, err := io.ReadAll(r.Body)
+	r.Body.Close()
+	// Always restore the body for downstream forwarding.
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || len(body) == 0 {
+		return "", false
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return "", false
+	}
+
+	var name string
+	switch tail {
+	case "filesets":
+		if v, ok := obj["filesetName"].(string); ok {
+			name = v
+		}
+	case "quotas":
+		if v, ok := obj["quotaType"].(string); ok && v == "fileset" {
+			if v, ok := obj["objectName"].(string); ok {
+				name = v
+			}
+		}
+	}
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // extractFsAndFileset extracts filesystem and fileset names from a scalemgmt URL path.
