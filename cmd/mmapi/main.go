@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -67,7 +68,11 @@ func main() {
 		}
 		token, err := tokenStore.Create(body.AllowedFS, body.AllowedFileset)
 		if err != nil {
-			http.Error(w, `{"error":"failed to create token"}`, http.StatusInternalServerError)
+			if errors.Is(err, auth.ErrInvalidTokenRequest) {
+				http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			} else {
+				http.Error(w, `{"error":"failed to create token"}`, http.StatusInternalServerError)
+			}
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -181,13 +186,34 @@ func ensureTLSCerts(cfg *config.Config) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	os.MkdirAll(filepath.Dir(certFile), 0o755)
-	certOut, _ := os.Create(certFile)
-	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	certOut.Close()
-	keyBytes, _ := x509.MarshalECPrivateKey(key)
-	keyOut, _ := os.OpenFile(keyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
-	keyOut.Close()
+	if err := os.MkdirAll(filepath.Dir(certFile), 0o755); err != nil {
+		return "", "", err
+	}
+	certOut, err := os.Create(certFile)
+	if err != nil {
+		return "", "", err
+	}
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
+		certOut.Close()
+		return "", "", err
+	}
+	if err := certOut.Close(); err != nil {
+		return "", "", err
+	}
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return "", "", err
+	}
+	keyOut, err := os.OpenFile(keyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", "", err
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}); err != nil {
+		keyOut.Close()
+		return "", "", err
+	}
+	if err := keyOut.Close(); err != nil {
+		return "", "", err
+	}
 	return certFile, keyFile, nil
 }

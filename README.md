@@ -28,11 +28,13 @@ make build-linux
 
 # Create an access token (filesystem-level)
 curl -sk -X POST https://<host>:8443/api/v1/tokens \
+  -H 'Authorization: Bearer <adminToken>' \
   -H 'Content-Type: application/json' \
   -d '{"allowedFs":["fs0"]}'
 
 # Create a token with fileset restriction (optional)
 curl -sk -X POST https://<host>:8443/api/v1/tokens \
+  -H 'Authorization: Bearer <adminToken>' \
   -H 'Content-Type: application/json' \
   -d '{"allowedFs":["fs0"],"allowedFileset":["pvc-xxx","pvc-yyy"]}'
 
@@ -54,7 +56,9 @@ mmctl fileset list fs0
   "tls": true,
   "guiUrl": "https://127.0.0.1:443",
   "guiUsername": "admin",
-  "guiPassword": "Admin@123"
+  "guiPassword": "Admin@123",
+  "adminToken": "mmapi_admin_ChangeMe_2026",
+  "guiVerifyTLS": false
 }
 ```
 
@@ -63,9 +67,15 @@ mmctl fileset list fs0
 | `port` | HTTP(S) listen port | 8443 |
 | `dataDir` | Token and TLS cert storage | `/var/lib/mmapi` |
 | `tls` | Enable HTTPS with self-signed cert | `true` |
+| `certFile` | TLS cert path (auto-generated if unset) | `<dataDir>/tls.crt` |
+| `keyFile` | TLS key path (auto-generated if unset) | `<dataDir>/tls.key` |
 | `guiUrl` | Upstream GPFS GUI URL | (required) |
 | `guiUsername` | GUI admin username | (required) |
 | `guiPassword` | GUI admin password | (required) |
+| `adminToken` | Bearer token protecting the token management API (empty = open) | (empty) |
+| `guiVerifyTLS` | Verify the upstream GUI TLS certificate | `false` |
+
+> ⚠️ Set a strong `adminToken` before exposing the management API. When empty, `/api/v1/tokens` is unauthenticated.
 
 ## API
 
@@ -81,10 +91,13 @@ Tokens restrict access at two levels:
 
 ### Token Management
 
+All token management endpoints require a `Bearer` admin token (the `adminToken`
+config field), e.g. `-H "Authorization: Bearer <adminToken>"`.
+
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/v1/tokens` | Create token |
-| GET | `/api/v1/tokens` | List tokens |
+| GET | `/api/v1/tokens` | List tokens (secret omitted) |
 | DELETE | `/api/v1/tokens/{id}` | Delete token |
 
 **Create token request body:**
@@ -132,6 +145,7 @@ mmctl token delete <id>                # Delete token
 
 # 3. Create mmapi token for CSI
 curl -sk -X POST https://<host>:8443/api/v1/tokens \
+  -H 'Authorization: Bearer <adminToken>' \
   -H 'Content-Type: application/json' \
   -d '{"allowedFs":["fs0"]}'
 

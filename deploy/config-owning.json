@@ -5,5 +5,6 @@
   "guiUrl": "https://127.0.0.1:443",
   "guiUsername": "admin",
   "guiPassword": "Admin@123",
-  "adminToken": "mmapi_admin_ChangeMe_2026"
+  "adminToken": "mmapi_admin_ChangeMe_2026",
+  "guiVerifyTLS": false
 }

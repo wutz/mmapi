@@ -117,4 +117,20 @@ func TestListTokens(t *testing.T) {
 	if len(tokens) != 2 {
 		t.Errorf("expected 2 tokens, got %d", len(tokens))
 	}
+	for _, ti := range tokens {
+		if ti.ID == "" {
+			t.Errorf("expected non-empty ID in List() result")
+		}
+		// TokenInfo has no Secret field by design; if that ever changes, fail.
+		if ti.AllowedFS == nil {
+			t.Errorf("token %q missing AllowedFS", ti.ID)
+		}
+	}
+}
+
+func TestCreateRejectsEmptyAllowedFS(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.Create(nil, nil); err == nil {
+		t.Fatal("expected error creating token with no allowed filesystems")
+	}
 }
