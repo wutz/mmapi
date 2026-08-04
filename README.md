@@ -26,18 +26,24 @@ make build-linux
 # Deploy mmapi proxy
 ./deploy/deploy.sh root@<gpfs-node> ./mmapi ./deploy/config-owning.json
 
-# Create an access token (filesystem-level)
-curl -sk -X POST https://<host>:8443/api/v1/tokens \
-  -H 'Authorization: Bearer <adminToken>' \
-  -H 'Content-Type: application/json' \
-  -d '{"allowedFs":["fs0"]}'
-
-# Test via mmctl, which speaks the GPFS mm* commands
+# Create an access token (filesystem-level).
+# MMAPI_ADMIN_TOKEN is the adminToken from config.json, and reaches only the
+# three mm*token commands.
 export MMAPI_URL=https://<host>:8443
-export MMAPI_TOKEN=<token-secret>
+export MMAPI_ADMIN_TOKEN=<adminToken>
+mmctl mmcrtoken fs0
+# Token 4f8c1e0b7a2d9354 created successfully.
+# Secret: mmapi_...
+
+# Test via mmctl, which speaks the GPFS mm* commands. These authenticate with
+# the access token just printed, never with the admin token.
+export MMAPI_TOKEN=mmapi_...
 mmctl mmlsfs fs0 -T
 mmctl mmlsfileset fs0
 ```
+
+The same token can be created over the API directly; see
+[Token Management](#token-management).
 
 ## Configuration
 
@@ -145,8 +151,40 @@ ln -s /usr/local/bin/mmctl /usr/local/bin/mmlsquota
 mmlsquota -j fset1 fs0
 ```
 
-Access tokens have no GPFS equivalent; `mmcrtoken`, `mmlstoken` and `mmdeltoken`
-are mmapi's own and need `MMAPI_ADMIN_TOKEN` rather than `MMAPI_TOKEN`.
+### Environment
+
+| Variable | Read by | Sent as |
+|---|---|---|
+| `MMAPI_URL` | every command (default `https://localhost:8443`) | — |
+| `MMAPI_TOKEN` | every GPFS command — everything proxied to `/scalemgmt/v2/` | `Authorization: Basic base64(admin:<token>)` |
+| `MMAPI_ADMIN_TOKEN` | `mmcrtoken`, `mmlstoken`, `mmdeltoken` only | `Authorization: Bearer <token>` |
+
+**The two tokens are not interchangeable, and the admin token is not the more
+privileged of the two.** Access tokens have no GPFS equivalent, so `mmcrtoken`,
+`mmlstoken` and `mmdeltoken` are mmapi's own and authenticate with
+`MMAPI_ADMIN_TOKEN`; every other command authenticates with `MMAPI_TOKEN` and
+ignores `MMAPI_ADMIN_TOKEN` entirely. Export only the admin token and
+`mmctl mmlscluster` sends no credentials at all:
+
+```console
+$ export MMAPI_ADMIN_TOKEN=mmapi_admin_ChangeMe_2026
+$ mmctl mmlscluster
+mmlscluster: unauthorized
+```
+
+Both variables can be exported at once — mmctl picks the right one per command.
+
+### Troubleshooting
+
+| Message | Cause |
+|---|---|
+| `unauthorized` | `MMAPI_TOKEN` is unset, or names a token the server does not know. Tokens live in `dataDir` (default `/var/lib/mmapi`); wiping it on redeploy invalidates every secret issued before, so reissue with `mmcrtoken`. |
+| `access denied: filesystem "fs0" not allowed` | The token is valid but its `allowedFs` does not list that filesystem. `mmlstoken` shows what each token covers. |
+| `connection refused`, `no route to host` | `MMAPI_URL` still points at the default `localhost:8443`. It must name the node running mmapi whenever mmctl runs elsewhere. |
+
+Commands that address no filesystem — `mmlscluster` among them — skip the
+`allowedFs` check, so any valid token runs them. An `unauthorized` from
+`mmlscluster` is therefore always the token itself, never its scope.
 
 ### Where mmctl and the cluster differ
 
