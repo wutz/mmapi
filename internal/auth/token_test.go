@@ -19,7 +19,7 @@ func newTestStore(t *testing.T) *TokenStore {
 func TestCreateAndValidateToken(t *testing.T) {
 	store := newTestStore(t)
 
-	token, err := store.Create([]string{"gpfs0"}, []string{"fileset-a"})
+	token, err := store.Create([]string{"gpfs0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestInvalidToken(t *testing.T) {
 
 func TestDeleteToken(t *testing.T) {
 	store := newTestStore(t)
-	token, _ := store.Create([]string{"gpfs0"}, nil)
+	token, _ := store.Create([]string{"gpfs0"})
 	if err := store.Delete(token.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -61,28 +61,16 @@ func TestDeleteToken(t *testing.T) {
 
 func TestCheckAccessFS(t *testing.T) {
 	store := newTestStore(t)
-	token, _ := store.Create([]string{"gpfs0", "gpfs1"}, nil)
+	token, _ := store.Create([]string{"gpfs0", "gpfs1"})
 
-	if err := store.CheckAccess(token, "gpfs0", ""); err != nil {
+	if err := store.CheckAccess(token, "gpfs0"); err != nil {
 		t.Errorf("expected access to gpfs0: %v", err)
 	}
-	if err := store.CheckAccess(token, "gpfs1", ""); err != nil {
+	if err := store.CheckAccess(token, "gpfs1"); err != nil {
 		t.Errorf("expected access to gpfs1: %v", err)
 	}
-	if err := store.CheckAccess(token, "gpfs2", ""); err == nil {
+	if err := store.CheckAccess(token, "gpfs2"); err == nil {
 		t.Error("expected access denied for gpfs2")
-	}
-}
-
-func TestCheckAccessFileset(t *testing.T) {
-	store := newTestStore(t)
-	token, _ := store.Create([]string{"gpfs0"}, []string{"fileset-a", "fileset-b"})
-
-	if err := store.CheckAccess(token, "gpfs0", "fileset-a"); err != nil {
-		t.Errorf("expected access to fileset-a: %v", err)
-	}
-	if err := store.CheckAccess(token, "gpfs0", "fileset-c"); err == nil {
-		t.Error("expected access denied for fileset-c")
 	}
 }
 
@@ -91,7 +79,7 @@ func TestTokenPersistence(t *testing.T) {
 	cfg := &config.Config{DataDir: dir}
 
 	store1 := NewTokenStore(cfg)
-	token, _ := store1.Create([]string{"gpfs0"}, []string{"fs-a"})
+	token, _ := store1.Create([]string{"gpfs0"})
 
 	path := filepath.Join(dir, "tokens.json")
 	if _, err := os.Stat(path); err != nil {
@@ -110,8 +98,8 @@ func TestTokenPersistence(t *testing.T) {
 
 func TestListTokens(t *testing.T) {
 	store := newTestStore(t)
-	store.Create([]string{"gpfs0"}, nil)
-	store.Create([]string{"gpfs1"}, nil)
+	store.Create([]string{"gpfs0"})
+	store.Create([]string{"gpfs1"})
 
 	tokens := store.List()
 	if len(tokens) != 2 {
@@ -130,7 +118,7 @@ func TestListTokens(t *testing.T) {
 
 func TestCreateRejectsEmptyAllowedFS(t *testing.T) {
 	store := newTestStore(t)
-	if _, err := store.Create(nil, nil); err == nil {
+	if _, err := store.Create(nil); err == nil {
 		t.Fatal("expected error creating token with no allowed filesystems")
 	}
 }

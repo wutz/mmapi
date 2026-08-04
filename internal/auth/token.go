@@ -13,19 +13,17 @@ import (
 )
 
 type Token struct {
-	ID            string   `json:"id"`
-	Secret        string   `json:"secret"`
-	AllowedFS     []string `json:"allowedFs"`
-	AllowedFileset []string `json:"allowedFileset,omitempty"`
+	ID        string   `json:"id"`
+	Secret    string   `json:"secret"`
+	AllowedFS []string `json:"allowedFs"`
 }
 
 // TokenInfo is the public view of a token returned by the management API. It
 // intentionally omits the Secret so that listing tokens does not leak the
 // credentials of every tenant.
 type TokenInfo struct {
-	ID             string   `json:"id"`
-	AllowedFS      []string `json:"allowedFs"`
-	AllowedFileset []string `json:"allowedFileset,omitempty"`
+	ID        string   `json:"id"`
+	AllowedFS []string `json:"allowedFs"`
 }
 
 // ErrInvalidTokenRequest is returned by Create for malformed token requests
@@ -34,9 +32,8 @@ var ErrInvalidTokenRequest = fmt.Errorf("invalid token request")
 
 func (t *Token) Info() *TokenInfo {
 	return &TokenInfo{
-		ID:             t.ID,
-		AllowedFS:      t.AllowedFS,
-		AllowedFileset: t.AllowedFileset,
+		ID:        t.ID,
+		AllowedFS: t.AllowedFS,
 	}
 }
 
@@ -57,7 +54,7 @@ func NewTokenStore(cfg *config.Config) *TokenStore {
 	return ts
 }
 
-func (ts *TokenStore) Create(allowedFS []string, allowedFileset []string) (*Token, error) {
+func (ts *TokenStore) Create(allowedFS []string) (*Token, error) {
 	if len(allowedFS) == 0 {
 		return nil, ErrInvalidTokenRequest
 	}
@@ -72,10 +69,9 @@ func (ts *TokenStore) Create(allowedFS []string, allowedFileset []string) (*Toke
 	}
 
 	token := &Token{
-		ID:            id,
-		Secret:        secret,
-		AllowedFS:     allowedFS,
-		AllowedFileset: allowedFileset,
+		ID:        id,
+		Secret:    secret,
+		AllowedFS: allowedFS,
 	}
 
 	ts.mu.Lock()
@@ -114,12 +110,12 @@ func (ts *TokenStore) List() []*TokenInfo {
 	return result
 }
 
-func (ts *TokenStore) CheckAccess(token *Token, fs string, fileset string) error {
+// CheckAccess reports whether the token may operate on the given filesystem.
+// Access is granted at filesystem granularity only: a token that owns a
+// filesystem owns every fileset inside it.
+func (ts *TokenStore) CheckAccess(token *Token, fs string) error {
 	if !contains(token.AllowedFS, fs) {
 		return fmt.Errorf("access denied: filesystem %q not allowed", fs)
-	}
-	if fileset != "" && len(token.AllowedFileset) > 0 && !contains(token.AllowedFileset, fileset) {
-		return fmt.Errorf("access denied: fileset %q not allowed", fileset)
 	}
 	return nil
 }
