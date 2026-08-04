@@ -7,8 +7,10 @@ CONFIG=${3:-./deploy/config.json}
 
 echo "Deploying mmapi to ${HOST}..."
 
-scp "$BINARY" "${HOST}:/usr/local/bin/mmapi"
-ssh "$HOST" "chmod +x /usr/local/bin/mmapi"
+# Copy to a staging path first: overwriting a running binary in place fails
+# with ETXTBSY ("text file busy") on an upgrade.
+scp "$BINARY" "${HOST}:/tmp/mmapi.new"
+ssh "$HOST" "install -m 0755 /tmp/mmapi.new /usr/local/bin/mmapi && rm -f /tmp/mmapi.new"
 
 ssh "$HOST" "mkdir -p /etc/mmapi /var/lib/mmapi"
 scp "$CONFIG" "${HOST}:/etc/mmapi/config.json"

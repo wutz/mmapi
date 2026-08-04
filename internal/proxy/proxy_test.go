@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,21 +17,22 @@ import (
 func setupTestProxy(t *testing.T) (*httptest.Server, http.Handler, *auth.TokenStore) {
 	t.Helper()
 
-	// Mock GPFS GUI backend
-	guiRequests := make(chan *http.Request, 10)
+	// Mock GPFS GUI backend. It echoes the request body back so tests can
+	// assert that the proxy forwards write payloads untouched.
 	guiBackend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		guiRequests <- r
+		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":{"code":200,"message":""},"filesystems":[{"name":"fs0"}]}`))
+		w.Write([]byte(`{"status":{"code":200,"message":""},"received":` +
+			strconv.Quote(string(body)) + `}`))
 	}))
 	t.Cleanup(guiBackend.Close)
 
 	cfg := &config.Config{
-		DataDir:      t.TempDir(),
-		TLS:          false,
-		GuiURL:       guiBackend.URL,
-		GuiUsername:  "admin",
-		GuiPassword:  "Admin@123",
+		DataDir:     t.TempDir(),
+		TLS:         false,
+		GuiURL:      guiBackend.URL,
+		GuiUsername: "admin",
+		GuiPassword: "Admin@123",
 	}
 
 	tokenStore := auth.NewTokenStore(cfg)
@@ -73,7 +76,7 @@ func TestProxyInvalidToken(t *testing.T) {
 func TestProxyFilesystemAccessGranted(t *testing.T) {
 	_, proxy, tokens := setupTestProxy(t)
 
-	token, _ := tokens.Create([]string{"fs0"}, nil)
+	token, _ := tokens.Create([]string{"fs0"})
 
 	req := makeRequest("GET", "/scalemgmt/v2/filesystems/fs0", token.Secret)
 	w := httptest.NewRecorder()
@@ -87,7 +90,7 @@ func TestProxyFilesystemAccessGranted(t *testing.T) {
 func TestProxyFilesystemAccessDenied(t *testing.T) {
 	_, proxy, tokens := setupTestProxy(t)
 
-	token, _ := tokens.Create([]string{"fs0"}, nil)
+	token, _ := tokens.Create([]string{"fs0"})
 
 	req := makeRequest("GET", "/scalemgmt/v2/filesystems/fs1", token.Secret)
 	w := httptest.NewRecorder()
@@ -98,10 +101,10 @@ func TestProxyFilesystemAccessDenied(t *testing.T) {
 	}
 }
 
-func TestProxyFilesetAccessGranted(t *testing.T) {
+func TestProxyFilesetPathAccessGranted(t *testing.T) {
 	_, proxy, tokens := setupTestProxy(t)
 
-	token, _ := tokens.Create([]string{"fs0"}, []string{"pvc-aaa"})
+	token, _ := tokens.Create([]string{"fs0"})
 
 	req := makeRequest("GET", "/scalemgmt/v2/filesystems/fs0/filesets/pvc-aaa", token.Secret)
 	w := httptest.NewRecorder()
@@ -112,12 +115,12 @@ func TestProxyFilesetAccessGranted(t *testing.T) {
 	}
 }
 
-func TestProxyFilesetAccessDenied(t *testing.T) {
+func TestProxyFilesetPathAccessDeniedOnForeignFS(t *testing.T) {
 	_, proxy, tokens := setupTestProxy(t)
 
-	token, _ := tokens.Create([]string{"fs0"}, []string{"pvc-aaa"})
+	token, _ := tokens.Create([]string{"fs0"})
 
-	req := makeRequest("GET", "/scalemgmt/v2/filesystems/fs0/filesets/pvc-bbb", token.Secret)
+	req := makeRequest("GET", "/scalemgmt/v2/filesystems/fs1/filesets/pvc-aaa", token.Secret)
 	w := httptest.NewRecorder()
 	proxy.ServeHTTP(w, req)
 
@@ -126,25 +129,29 @@ func TestProxyFilesetAccessDenied(t *testing.T) {
 	}
 }
 
-func TestProxyFilesetAccessAllWhenNoRestriction(t *testing.T) {
+// A token owning a filesystem owns every fileset in it, including ones the
+// CSI driver provisions dynamically under names nobody could allowlist ahead
+// of time.
+func TestProxyAnyFilesetInAllowedFS(t *testing.T) {
 	_, proxy, tokens := setupTestProxy(t)
 
-	// Token with allowedFs but no allowedFileset restriction
-	token, _ := tokens.Create([]string{"fs0"}, nil)
+	token, _ := tokens.Create([]string{"fs0"})
 
-	req := makeRequest("GET", "/scalemgmt/v2/filesystems/fs0/filesets/any-fileset", token.Secret)
-	w := httptest.NewRecorder()
-	proxy.ServeHTTP(w, req)
+	for _, name := range []string{"pvc-aaa", "pvc-e2a1f0c4-dead-beef", "any-fileset"} {
+		req := makeRequest("GET", "/scalemgmt/v2/filesystems/fs0/filesets/"+name, token.Secret)
+		w := httptest.NewRecorder()
+		proxy.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		if w.Code != http.StatusOK {
+			t.Fatalf("fileset %q: expected 200, got %d: %s", name, w.Code, w.Body.String())
+		}
 	}
 }
 
 func TestProxyClusterEndpointNoFsCheck(t *testing.T) {
 	_, proxy, tokens := setupTestProxy(t)
 
-	token, _ := tokens.Create([]string{"fs0"}, nil)
+	token, _ := tokens.Create([]string{"fs0"})
 
 	// /cluster endpoint has no filesystem in path, should pass
 	req := makeRequest("GET", "/scalemgmt/v2/cluster", token.Secret)
@@ -168,31 +175,66 @@ func TestProxyNonScalemgmtPath(t *testing.T) {
 	}
 }
 
-func TestProxyCreateFilesetBypassDenied(t *testing.T) {
+func TestProxyCreateFilesetAnyName(t *testing.T) {
 	_, proxy, tokens := setupTestProxy(t)
 
-	// Token restricted to a single fileset must NOT be able to create a
-	// differently-named fileset via the create endpoint (body carries the name).
-	token, _ := tokens.Create([]string{"fs0"}, []string{"pvc-aaa"})
+	token, _ := tokens.Create([]string{"fs0"})
 
 	req := httptest.NewRequest("POST", "/scalemgmt/v2/filesystems/fs0/filesets",
+		strings.NewReader(`{"filesetName":"pvc-anything","inodeSpace":"new"}`))
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token.Secret)))
+	w := httptest.NewRecorder()
+	proxy.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	// The proxy must forward the payload untouched now that it no longer
+	// reads and rebuilds the body.
+	if !strings.Contains(w.Body.String(), `pvc-anything`) {
+		t.Fatalf("expected body to reach the GUI intact, got %s", w.Body.String())
+	}
+}
+
+func TestProxyCreateFilesetDeniedOnForeignFS(t *testing.T) {
+	_, proxy, tokens := setupTestProxy(t)
+
+	token, _ := tokens.Create([]string{"fs0"})
+
+	req := httptest.NewRequest("POST", "/scalemgmt/v2/filesystems/fs1/filesets",
 		strings.NewReader(`{"filesetName":"pvc-evil","inodeSpace":"new"}`))
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token.Secret)))
 	w := httptest.NewRecorder()
 	proxy.ServeHTTP(w, req)
 
 	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 (bypass blocked), got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestProxyCreateFilesetAllowedFileset(t *testing.T) {
+func TestProxySetQuotaDeniedOnForeignFS(t *testing.T) {
 	_, proxy, tokens := setupTestProxy(t)
 
-	token, _ := tokens.Create([]string{"fs0"}, []string{"pvc-aaa"})
+	token, _ := tokens.Create([]string{"fs0"})
 
-	req := httptest.NewRequest("POST", "/scalemgmt/v2/filesystems/fs0/filesets",
-		strings.NewReader(`{"filesetName":"pvc-aaa","inodeSpace":"new"}`))
+	req := httptest.NewRequest("POST", "/scalemgmt/v2/filesystems/fs1/quotas",
+		strings.NewReader(`{"operationType":"setQuota","quotaType":"fileset","objectName":"pvc-evil","blockSoftLimit":"1","blockHardLimit":"2"}`))
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token.Secret)))
+	w := httptest.NewRecorder()
+	proxy.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProxySetQuotaAllowedFS(t *testing.T) {
+	_, proxy, tokens := setupTestProxy(t)
+
+	token, _ := tokens.Create([]string{"fs0"})
+
+	req := httptest.NewRequest("POST", "/scalemgmt/v2/filesystems/fs0/quotas",
+		strings.NewReader(`{"operationType":"setQuota","quotaType":"fileset","objectName":"pvc-aaa","blockSoftLimit":"1","blockHardLimit":"2"}`))
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token.Secret)))
 	w := httptest.NewRecorder()
 	proxy.ServeHTTP(w, req)
@@ -202,44 +244,23 @@ func TestProxyCreateFilesetAllowedFileset(t *testing.T) {
 	}
 }
 
-func TestProxySetQuotaBypassDenied(t *testing.T) {
-	_, proxy, tokens := setupTestProxy(t)
-
-	// quota set names the target fileset in the body (objectName), so a token
-	// restricted to pvc-aaa must not set quota on pvc-evil.
-	token, _ := tokens.Create([]string{"fs0"}, []string{"pvc-aaa"})
-
-	req := httptest.NewRequest("POST", "/scalemgmt/v2/filesystems/fs0/quotas",
-		strings.NewReader(`{"operationType":"setQuota","quotaType":"fileset","objectName":"pvc-evil","blockSoftLimit":"1","blockHardLimit":"2"}`))
-	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token.Secret)))
-	w := httptest.NewRecorder()
-	proxy.ServeHTTP(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 (quota bypass blocked), got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestExtractFsAndFileset(t *testing.T) {
+func TestExtractFS(t *testing.T) {
 	tests := []struct {
-		path         string
-		expectedFs   string
-		expectedFset string
+		path       string
+		expectedFs string
 	}{
-		{"/scalemgmt/v2/filesystems/fs0", "fs0", ""},
-		{"/scalemgmt/v2/filesystems/fs0/filesets", "fs0", ""},
-		{"/scalemgmt/v2/filesystems/fs0/filesets/pvc-xxx", "fs0", "pvc-xxx"},
-		{"/scalemgmt/v2/filesystems/fs0/filesets/pvc-xxx/link", "fs0", "pvc-xxx"},
-		{"/scalemgmt/v2/filesystems/fs0/quotas", "fs0", ""},
-		{"/scalemgmt/v2/cluster", "", ""},
-		{"/scalemgmt/v2/nodes/node1/health/states", "", ""},
+		{"/scalemgmt/v2/filesystems/fs0", "fs0"},
+		{"/scalemgmt/v2/filesystems/fs0/filesets", "fs0"},
+		{"/scalemgmt/v2/filesystems/fs0/filesets/pvc-xxx", "fs0"},
+		{"/scalemgmt/v2/filesystems/fs0/filesets/pvc-xxx/link", "fs0"},
+		{"/scalemgmt/v2/filesystems/fs0/quotas", "fs0"},
+		{"/scalemgmt/v2/cluster", ""},
+		{"/scalemgmt/v2/nodes/node1/health/states", ""},
 	}
 
 	for _, tt := range tests {
-		fs, fset := extractFsAndFileset(tt.path)
-		if fs != tt.expectedFs || fset != tt.expectedFset {
-			t.Errorf("extractFsAndFileset(%q) = (%q, %q), want (%q, %q)",
-				tt.path, fs, fset, tt.expectedFs, tt.expectedFset)
+		if fs := extractFS(tt.path); fs != tt.expectedFs {
+			t.Errorf("extractFS(%q) = %q, want %q", tt.path, fs, tt.expectedFs)
 		}
 	}
 }

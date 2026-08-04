@@ -59,14 +59,13 @@ func main() {
 	// Token management API (requires admin token)
 	mux.HandleFunc("POST /api/v1/tokens", adminAuth(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			AllowedFS      []string `json:"allowedFs"`
-			AllowedFileset []string `json:"allowedFileset,omitempty"`
+			AllowedFS []string `json:"allowedFs"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 			return
 		}
-		token, err := tokenStore.Create(body.AllowedFS, body.AllowedFileset)
+		token, err := tokenStore.Create(body.AllowedFS)
 		if err != nil {
 			if errors.Is(err, auth.ErrInvalidTokenRequest) {
 				http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)

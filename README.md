@@ -1,16 +1,16 @@
 # mmapi
 
-GPFS multi-tenant API proxy for CSI support. Transparently proxies the IBM Storage Scale GUI REST API (`/scalemgmt/v2/`) with token-based per-filesystem and per-fileset access control.
+GPFS multi-tenant API proxy for CSI support. Transparently proxies the IBM Storage Scale GUI REST API (`/scalemgmt/v2/`) with token-based per-filesystem access control.
 
 ## Architecture
 
 ```
-CSI Driver → mmapi (token auth + FS/fileset access control) → GPFS GUI (real API) → GPFS Cluster
+CSI Driver → mmapi (token auth + filesystem access control) → GPFS GUI (real API) → GPFS Cluster
 ```
 
 mmapi does NOT implement any GPFS commands. It is a pure reverse proxy that:
 1. Authenticates requests using mmapi tokens (via Basic Auth)
-2. Checks if the token has access to the requested filesystem and fileset
+2. Checks if the token has access to the requested filesystem
 3. Forwards the request to the real GPFS GUI with admin credentials
 4. Returns the GUI's response unmodified
 
@@ -31,12 +31,6 @@ curl -sk -X POST https://<host>:8443/api/v1/tokens \
   -H 'Authorization: Bearer <adminToken>' \
   -H 'Content-Type: application/json' \
   -d '{"allowedFs":["fs0"]}'
-
-# Create a token with fileset restriction (optional)
-curl -sk -X POST https://<host>:8443/api/v1/tokens \
-  -H 'Authorization: Bearer <adminToken>' \
-  -H 'Content-Type: application/json' \
-  -d '{"allowedFs":["fs0"],"allowedFileset":["pvc-xxx","pvc-yyy"]}'
 
 # Test via mmctl
 export MMAPI_URL=https://<host>:8443
@@ -85,9 +79,15 @@ All `/scalemgmt/v2/` requests are proxied to the GPFS GUI. Authentication uses B
 
 ### Access Control
 
-Tokens restrict access at two levels:
-- **Filesystem level** (`allowedFs`): Only requests targeting allowed filesystems are forwarded
-- **Fileset level** (`allowedFileset`, optional): Only requests targeting allowed filesets are forwarded. If empty, all filesets in allowed filesystems are accessible.
+Tokens restrict access at filesystem granularity (`allowedFs`): only requests
+targeting an allowed filesystem are forwarded. A token that owns a filesystem
+owns every fileset inside it, including filesets the CSI driver provisions
+dynamically (`pvc-<uuid>`).
+
+Isolate tenants by giving each one its own filesystem. Sharing a single
+filesystem between tenants is not a supported isolation boundary — fileset-level
+access control was removed because dynamically provisioned fileset names cannot
+be allowlisted in advance.
 
 ### Token Management
 
@@ -103,8 +103,7 @@ config field), e.g. `-H "Authorization: Bearer <adminToken>"`.
 **Create token request body:**
 ```json
 {
-  "allowedFs": ["fs0"],
-  "allowedFileset": ["pvc-xxx", "pvc-yyy"]
+  "allowedFs": ["fs0"]
 }
 ```
 

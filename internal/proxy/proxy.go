@@ -1,11 +1,8 @@
 package proxy
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -72,20 +69,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Access control: extract filesystem and fileset from URL and request body
-		fs, fileset := extractFsAndFileset(r.URL.Path)
-		if fs != "" {
-			// For some write operations the target fileset is named in the
-			// request body rather than the URL path (create fileset, set
-			// quota). Read and inspect the body so fileset-level restrictions
-			// cannot be bypassed by these endpoints.
-			if fileset == "" && r.Body != nil && r.Method == http.MethodPost {
-				if bf, ok := filesetFromBody(r, h.tokens, token); ok {
-					fileset = bf
-				}
-			}
-			if err := h.tokens.CheckAccess(token, fs, fileset); err != nil {
-				slog.Warn("access denied", "fs", fs, "fileset", fileset, "token", token.ID, "error", err)
+		// Access control: extract the target filesystem from the URL. Access is
+		// granted per filesystem; every fileset inside an allowed filesystem is
+		// reachable, so the request body never needs inspecting.
+		if fs := extractFS(r.URL.Path); fs != "" {
+			if err := h.tokens.CheckAccess(token, fs); err != nil {
+				slog.Warn("access denied", "fs", fs, "token", token.ID, "error", err)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				w.Write([]byte(`{"status":{"code":403,"message":"` + err.Error() + `"}}`))
@@ -126,75 +115,14 @@ func (h *handler) authenticate(r *http.Request) *auth.Token {
 	return nil
 }
 
-// filesetFromBody inspects the JSON request body for a fileset name on endpoints
-// where the target fileset is not present in the URL path:
-//   - POST /filesystems/{fs}/filesets        -> body field "filesetName"
-//   - POST /filesystems/{fs}/quotas          -> body field "objectName" (quotaType=fileset)
+// extractFS extracts the filesystem name from a scalemgmt URL path.
+// e.g., /scalemgmt/v2/filesystems/fs0/filesets/myfset -> "fs0"
 //
-// It reads the body but restores it (via NopCloser over a bytes.Reader) so the
-// proxy can still forward it. Returns the discovered fileset name and true when
-// a name was found; ("", false) leaves the caller's fileset untouched.
-func filesetFromBody(r *http.Request, store *auth.TokenStore, token *auth.Token) (string, bool) {
-	// Only the parts after {fs} matter: "filesets" (create) or "quotas" (set).
-	const prefix = "/scalemgmt/v2/filesystems/"
-	rest := r.URL.Path[len(prefix):]
-	parts := strings.SplitN(rest, "/", 2)
-	if len(parts) < 2 {
-		return "", false
-	}
-	tail := strings.SplitN(parts[1], "/", 2)[0]
-	if tail != "filesets" && tail != "quotas" {
-		return "", false
-	}
-
-	body, err := io.ReadAll(r.Body)
-	r.Body.Close()
-	// Always restore the body for downstream forwarding.
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if err != nil || len(body) == 0 {
-		return "", false
-	}
-
-	var obj map[string]any
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return "", false
-	}
-
-	var name string
-	switch tail {
-	case "filesets":
-		if v, ok := obj["filesetName"].(string); ok {
-			name = v
-		}
-	case "quotas":
-		if v, ok := obj["quotaType"].(string); ok && v == "fileset" {
-			if v, ok := obj["objectName"].(string); ok {
-				name = v
-			}
-		}
-	}
-	if name == "" {
-		return "", false
-	}
-	return name, true
-}
-
-// extractFsAndFileset extracts filesystem and fileset names from a scalemgmt URL path.
-// e.g., /scalemgmt/v2/filesystems/fs0/filesets/myfset -> "fs0", "myfset"
-//       /scalemgmt/v2/filesystems/fs0 -> "fs0", ""
-func extractFsAndFileset(path string) (string, string) {
+//	/scalemgmt/v2/cluster                         -> ""
+func extractFS(path string) string {
 	const prefix = "/scalemgmt/v2/filesystems/"
 	if !strings.HasPrefix(path, prefix) {
-		return "", ""
+		return ""
 	}
-	rest := path[len(prefix):]
-	parts := strings.SplitN(rest, "/", 3)
-	fs := parts[0]
-	fileset := ""
-	if len(parts) >= 3 && parts[1] == "filesets" {
-		// /filesystems/{fs}/filesets/{fileset}[/...]
-		fsetParts := strings.SplitN(parts[2], "/", 2)
-		fileset = fsetParts[0]
-	}
-	return fs, fileset
+	return strings.SplitN(path[len(prefix):], "/", 2)[0]
 }

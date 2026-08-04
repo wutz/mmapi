@@ -73,7 +73,7 @@ Commands:
   fileset unlink <fs> <name>        Unlink fileset
   quota list <fs>            List quotas
   quota set <fs> <fileset> <soft> <hard>  Set quota
-  token create <fs1,fs2,...> [fileset1,...]  Create access token
+  token create <fs1,fs2,...>  Create access token
   token list                 List tokens
   token delete <id>          Delete token
 
@@ -362,16 +362,11 @@ func handleToken(args []string) {
 	switch args[0] {
 	case "create":
 		if len(args) < 2 {
-			fatal(fmt.Errorf("usage: mmctl token create <fs1,fs2,...> [fileset1,...]"))
+			fatal(fmt.Errorf("usage: mmctl token create <fs1,fs2,...>"))
 		}
 		fsList := strings.Split(args[1], ",")
-		var fsetList []string
-		if len(args) > 2 {
-			fsetList = strings.Split(args[2], ",")
-		}
 		body, _ := json.Marshal(map[string]any{
-			"allowedFs":      fsList,
-			"allowedFileset": fsetList,
+			"allowedFs": fsList,
 		})
 		data, code, err := doAdminRequest("POST", "/api/v1/tokens", string(body))
 		if err != nil {
