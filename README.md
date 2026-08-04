@@ -32,11 +32,11 @@ curl -sk -X POST https://<host>:8443/api/v1/tokens \
   -H 'Content-Type: application/json' \
   -d '{"allowedFs":["fs0"]}'
 
-# Test via mmctl
+# Test via mmctl, which speaks the GPFS mm* commands
 export MMAPI_URL=https://<host>:8443
 export MMAPI_TOKEN=<token-secret>
-mmctl fs list
-mmctl fileset list fs0
+mmctl mmlsfs fs0 -T
+mmctl mmlsfileset fs0
 ```
 
 ## Configuration
@@ -109,64 +109,107 @@ config field), e.g. `-H "Authorization: Bearer <adminToken>"`.
 
 ## mmctl CLI
 
+mmctl is the GPFS command line, aimed at mmapi instead of a cluster node. Every
+command is named after the `mm*` command it stands for, takes that command's
+options and operands, and prints what it prints — so `mmctl mmlsquota -j fset1
+fs0` produces the same table as `mmlsquota -j fset1 fs0` on the cluster.
+
 ```bash
-mmctl cluster                          # Cluster info
-mmctl fs list                          # List filesystems
-mmctl fs get <name>                    # Get filesystem details
-mmctl fileset list <fs>                # List filesets
-mmctl fileset create <fs> <name>       # Create fileset
-mmctl fileset delete <fs> <name>       # Delete fileset
-mmctl fileset link <fs> <name> <path>  # Link fileset
-mmctl fileset unlink <fs> <name>       # Unlink fileset
-mmctl quota list <target> [type]       # List quotas (type: USR|GRP|FILESET)
-mmctl quota set <fs> <fset> <soft> <hard>  # Set fileset quota
-mmctl quota user list <target>         # List user quotas
-mmctl quota user set <target> <user> <soft> <hard> [<filesSoft> <filesHard>]
-mmctl quota user unset <target> <user> # Remove a user quota
-mmctl quota group list <target>        # List group quotas
-mmctl quota group set <target> <group> <soft> <hard> [<filesSoft> <filesHard>]
-mmctl quota group unset <target> <group>   # Remove a group quota
-mmctl token create <fs1,fs2>           # Create token
-mmctl token list                       # List tokens
-mmctl token delete <id>                # Delete token
+mmctl mmlscluster [-Y]                       # Cluster configuration
+mmctl mmlsfs {Device | all} [-T] [-Q] ...    # File system attributes
+mmctl mmlsfileset Device [Fileset,...] [-d] [-i] [-L] [-Y]
+mmctl mmcrfileset Device FilesetName [-t Comment] [-J JunctionPath]
+                  [--inode-space {new | ExistingFileset}] [--inode-limit N]
+mmctl mmchfileset Device FilesetName [-j NewName] [-t NewComment]
+mmctl mmdelfileset Device FilesetName [-f]
+mmctl mmlinkfileset Device FilesetName [-J JunctionPath]
+mmctl mmunlinkfileset Device FilesetName [-f]
+mmctl mmlsquota [-u User | -g Group | -j Fileset] [-Y]
+                [--block-size {BlockSize | auto}] [Device[:Fileset] ...]
+mmctl mmrepquota [-u] [-g] [-j] [-n] [-Y] {-a | Device[:Fileset] ...}
+mmctl mmsetquota Device[:Fileset] [--user IdOrName[,...]] [--group IdOrName[,...]]
+                 [--block SoftLimit[:HardLimit]] [--files SoftLimit[:HardLimit]]
+mmctl mmsetquota Device[:Fileset] --default {user | group | fileset} ...
+mmctl mmsetquota Device[:Fileset] --grace {user | group | fileset} ...
+mmctl mmcrtoken Device[,Device...]           # mmapi extension
+mmctl mmlstoken [-Y]                         # mmapi extension
+mmctl mmdeltoken TokenId                     # mmapi extension
 ```
+
+`mmctl <command> --help` prints that command's synopsis; `mmctl help` lists them
+all. A symlink named after a command invokes it directly, the way the commands
+are reached on a cluster node:
+
+```bash
+ln -s /usr/local/bin/mmctl /usr/local/bin/mmlsquota
+mmlsquota -j fset1 fs0
+```
+
+Access tokens have no GPFS equivalent; `mmcrtoken`, `mmlstoken` and `mmdeltoken`
+are mmapi's own and need `MMAPI_ADMIN_TOKEN` rather than `MMAPI_TOKEN`.
+
+### Where mmctl and the cluster differ
+
+mmctl reports what the GUI REST API reports, which is not quite everything the
+mm commands read from the local daemon:
+
+| Difference | Detail |
+|---|---|
+| Missing `mmlsfs` attributes | `--subblocks-per-full-block`, `--maintenance-mode`, `--flush-on-close`, `--auto-inode-limit`, `--nfs4-owner-write-acl`, `--inode-segment-mgr` and the per-role file system versions are not in the API; `-V` prints `37.00` rather than `37.00 (5.2.3.0)` |
+| `mmlsfileset -d` | Reports the GUI's usage figure (quota accounting), which lags and differs from the inode scan `mmlsfileset -d` performs on a node |
+| `-Y` records | The record and field names match, but fields the API does not report are `-` or empty: `preventSnapshotRestore`, `permInheritFlag` and `falStatus` in `mmlsfileset`, `remarks` in `mmrepquota`, the internal `otherNodeRoles` code in `mmlscluster` (its readable alias is filled) |
+| Quota freshness | Reads come from the GUI's quota cache, refreshed a few seconds after a write |
+| Missing warnings | The cluster's own advisories, such as *"quota accounting information is outdated. Run mmcheckquota"*, are not surfaced |
+| `mmcrfileset` | The GUI links the new fileset immediately, where `mmcrfileset` leaves it unlinked until `mmlinkfileset` |
+| Write output | Success messages come from the GUI (`EFSSG0070I File set X created successfully.`) rather than the mm command's own wording |
+| root quotas | The GUI rejects `--user root` / `--user 0` with *"The value 0 specified for u is invalid"*; GPFS does not enforce root quotas anyway |
 
 ### Quotas
 
-Quota commands take a target in the `mmsetquota` `Device[:Fileset]` form:
-`fs0` addresses the filesystem, `fs0:fset1` addresses one fileset inside it.
+Quota commands take the `Device[:Fileset]` operand of `mmsetquota` and
+`mmlsquota`: `fs0` addresses the file system, `fs0:fset1` one fileset in it.
 
 Which one to use is decided by the filesystem, not by preference. When
 `mmlsfs <fs> --perfileset-quota` reports `yes` — the default for filesystems
 serving CSI — user and group quotas exist per fileset only, and the GUI rejects
 filesystem-scoped writes with *"Per fileset quota enabled on this filesystem"*.
-Use `fs0:fset1` there. Fileset quotas themselves are always filesystem-scoped
-(`mmctl quota set fs0 fset1 ...`).
+Use `fs0:fset1` there. Reading with a bare `fs0` still works: mmctl walks the
+filesets, as `mmlsquota` does, which costs one request per fileset.
 
-Limits use GPFS syntax (`10G`, `512M`, `1T`); `0` means unlimited. Block and
-file (inode) limits are both supported — pass the optional
-`<filesSoft> <filesHard>` pair to set inode limits alongside block limits.
-GPFS has no delete-quota operation, so `unset` zeroes every limit.
+A fileset's own quota is set through the fileset half of the operand with
+neither `--user` nor `--group`: `mmctl mmsetquota fs0:fset1 --block 10G:20G`.
+
+Limits use GPFS syntax (`10G`, `512M`, `1T`); `0` means no limit, and omitting
+`HardLimit` leaves the hard limit unset. GPFS has no delete operation for a
+quota — zero every limit to remove one.
 
 Quota writes are asynchronous in the GUI: it answers `202` with a job handle.
-mmctl follows the job to completion and reports `mmsetquota`'s own output, so a
-failure surfaces as a non-zero exit rather than a silent accept.
+mmctl follows the job to completion and reports its output, so a failure
+surfaces as a non-zero exit rather than a silent accept.
 
 Reads go through the GUI's own quota cache, which it refreshes a few seconds
-after each write. A `quota list` issued immediately after a `set` can therefore
-still show the previous limits; re-run it, or use `mmlsquota` on the cluster for
-the authoritative value. This is GUI behaviour, not proxy caching — mmapi
-forwards every request untouched.
+after each write. An `mmlsquota` issued immediately after an `mmsetquota` can
+therefore still show the previous limits; re-run it, or use `mmlsquota` on the
+cluster for the authoritative value. This is GUI behaviour, not proxy caching —
+mmapi forwards every request untouched.
 
 ```bash
 # Per-fileset user and group quotas (per-fileset quota enabled)
-mmctl quota user set fs0:fset1 ubuntu 1G 2G
-mmctl quota group set fs0:fset1 ubuntu 1G 2G 1000 2000
-mmctl quota user list fs0:fset1
-mmctl quota user unset fs0:fset1 ubuntu
+mmctl mmsetquota fs0:fset1 --user ubuntu --block 1G:2G
+mmctl mmsetquota fs0:fset1 --group ubuntu --block 1G:2G --files 1000:2000
+mmctl mmlsquota -u ubuntu fs0:fset1
+mmctl mmsetquota fs0:fset1 --user ubuntu --block 0:0 --files 0:0   # remove
+
+# A fileset's own quota
+mmctl mmsetquota fs0:fset1 --block 200G:200G --files 2000000:2048000
+mmctl mmlsquota -j fset1 fs0
+
+# Every quota in a fileset, or in the file system
+mmctl mmrepquota fs0:fset1
+mmctl mmrepquota -j fs0
 
 # Filesystem-wide user quota (per-fileset quota disabled)
-mmctl quota user set fs0 ubuntu 1G 2G
+mmctl mmsetquota fs0 --user ubuntu --block 1G:2G
 ```
 
 Tokens authorize at filesystem granularity, so a token holding `fs0` may manage

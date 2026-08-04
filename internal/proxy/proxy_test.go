@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -98,6 +99,34 @@ func TestProxyFilesystemAccessDenied(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+// The denial message quotes the filesystem name, so the body has to be encoded
+// rather than assembled by hand for clients to be able to parse it.
+func TestProxyDenialBodyIsValidJSON(t *testing.T) {
+	_, proxy, tokens := setupTestProxy(t)
+
+	token, _ := tokens.Create([]string{"fs0"})
+
+	req := makeRequest("GET", "/scalemgmt/v2/filesystems/fs1", token.Secret)
+	w := httptest.NewRecorder()
+	proxy.ServeHTTP(w, req)
+
+	var body struct {
+		Status struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("denial body is not valid JSON: %v: %s", err, w.Body.String())
+	}
+	if body.Status.Code != http.StatusForbidden {
+		t.Errorf("status.code = %d, want %d", body.Status.Code, http.StatusForbidden)
+	}
+	if !strings.Contains(body.Status.Message, "fs1") {
+		t.Errorf("status.message = %q, want it to name the filesystem", body.Status.Message)
 	}
 }
 

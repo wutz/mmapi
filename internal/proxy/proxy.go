@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -63,9 +64,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/scalemgmt/") {
 		token := h.authenticate(r)
 		if token == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"status":{"code":401,"message":"unauthorized"}}`))
+			writeStatus(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 
@@ -75,9 +74,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if fs := extractFS(r.URL.Path); fs != "" {
 			if err := h.tokens.CheckAccess(token, fs); err != nil {
 				slog.Warn("access denied", "fs", fs, "token", token.ID, "error", err)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				w.Write([]byte(`{"status":{"code":403,"message":"` + err.Error() + `"}}`))
+				writeStatus(w, http.StatusForbidden, err.Error())
 				return
 			}
 		}
@@ -88,6 +85,22 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Non-scalemgmt paths: return 404
 	http.NotFound(w, r)
+}
+
+// writeStatus answers with the GUI's error envelope. The message is encoded
+// rather than concatenated: a filesystem name quoted inside it would otherwise
+// produce a body clients cannot parse.
+func writeStatus(w http.ResponseWriter, code int, message string) {
+	body, err := json.Marshal(map[string]any{
+		"status": map[string]any{"code": code, "message": message},
+	})
+	if err != nil {
+		body = []byte(`{"status":{"code":500,"message":"internal error"}}`)
+		code = http.StatusInternalServerError
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(body)
 }
 
 func (h *handler) authenticate(r *http.Request) *auth.Token {
