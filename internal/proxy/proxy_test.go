@@ -244,6 +244,76 @@ func TestProxySetQuotaAllowedFS(t *testing.T) {
 	}
 }
 
+// User and group quotas live under the fileset-scoped quota collection when a
+// filesystem has per-fileset quota enabled. Those paths must stay behind the
+// same filesystem check as everything else.
+func TestProxyFilesetQuotaPathAccess(t *testing.T) {
+	_, proxy, tokens := setupTestProxy(t)
+
+	token, _ := tokens.Create([]string{"fs0"})
+
+	tests := []struct {
+		name     string
+		method   string
+		path     string
+		body     string
+		expected int
+	}{
+		{"list allowed", "GET", "/scalemgmt/v2/filesystems/fs0/filesets/fset1/quotas", "", http.StatusOK},
+		{"list filtered allowed", "GET", "/scalemgmt/v2/filesystems/fs0/filesets/fset1/quotas?filter=quotaType=USR", "", http.StatusOK},
+		{"list denied", "GET", "/scalemgmt/v2/filesystems/fs1/filesets/fset1/quotas", "", http.StatusForbidden},
+		{"set user allowed", "POST", "/scalemgmt/v2/filesystems/fs0/filesets/fset1/quotas",
+			`{"operationType":"setQuota","quotaType":"USR","objectName":"ubuntu","blockSoftLimit":"1G","blockHardLimit":"2G"}`, http.StatusOK},
+		{"set user denied", "POST", "/scalemgmt/v2/filesystems/fs1/filesets/fset1/quotas",
+			`{"operationType":"setQuota","quotaType":"USR","objectName":"ubuntu","blockSoftLimit":"1G","blockHardLimit":"2G"}`, http.StatusForbidden},
+		{"set group allowed", "POST", "/scalemgmt/v2/filesystems/fs0/filesets/fset1/quotas",
+			`{"operationType":"setQuota","quotaType":"GRP","objectName":"ubuntu","blockSoftLimit":"1G","blockHardLimit":"2G"}`, http.StatusOK},
+		{"set group denied", "POST", "/scalemgmt/v2/filesystems/fs1/filesets/fset1/quotas",
+			`{"operationType":"setQuota","quotaType":"GRP","objectName":"ubuntu","blockSoftLimit":"1G","blockHardLimit":"2G"}`, http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body io.Reader
+			if tt.body != "" {
+				body = strings.NewReader(tt.body)
+			}
+			req := httptest.NewRequest(tt.method, tt.path, body)
+			req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token.Secret)))
+			w := httptest.NewRecorder()
+			proxy.ServeHTTP(w, req)
+
+			if w.Code != tt.expected {
+				t.Fatalf("expected %d, got %d: %s", tt.expected, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// The quota payload carries the user or group name, which the proxy must not
+// touch — it authorizes on the filesystem in the path alone.
+func TestProxyUserQuotaBodyForwardedIntact(t *testing.T) {
+	_, proxy, tokens := setupTestProxy(t)
+
+	token, _ := tokens.Create([]string{"fs0"})
+
+	payload := `{"operationType":"setQuota","quotaType":"USR","objectName":"ubuntu","blockSoftLimit":"1G","blockHardLimit":"2G","filesSoftLimit":"1000","filesHardLimit":"2000"}`
+	req := httptest.NewRequest("POST", "/scalemgmt/v2/filesystems/fs0/filesets/fset1/quotas",
+		strings.NewReader(payload))
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:"+token.Secret)))
+	w := httptest.NewRecorder()
+	proxy.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	for _, want := range []string{`quotaType`, `USR`, `ubuntu`, `filesHardLimit`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Fatalf("expected %q to reach the GUI, got %s", want, w.Body.String())
+		}
+	}
+}
+
 func TestExtractFS(t *testing.T) {
 	tests := []struct {
 		path       string
@@ -254,6 +324,8 @@ func TestExtractFS(t *testing.T) {
 		{"/scalemgmt/v2/filesystems/fs0/filesets/pvc-xxx", "fs0"},
 		{"/scalemgmt/v2/filesystems/fs0/filesets/pvc-xxx/link", "fs0"},
 		{"/scalemgmt/v2/filesystems/fs0/quotas", "fs0"},
+		{"/scalemgmt/v2/filesystems/fs0/filesets/fset1/quotas", "fs0"},
+		{"/scalemgmt/v2/filesystems/fs0/quotadefaults", "fs0"},
 		{"/scalemgmt/v2/cluster", ""},
 		{"/scalemgmt/v2/nodes/node1/health/states", ""},
 	}

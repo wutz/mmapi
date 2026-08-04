@@ -118,12 +118,59 @@ mmctl fileset create <fs> <name>       # Create fileset
 mmctl fileset delete <fs> <name>       # Delete fileset
 mmctl fileset link <fs> <name> <path>  # Link fileset
 mmctl fileset unlink <fs> <name>       # Unlink fileset
-mmctl quota list <fs>                  # List quotas
-mmctl quota set <fs> <fset> <soft> <hard>  # Set quota
+mmctl quota list <target> [type]       # List quotas (type: USR|GRP|FILESET)
+mmctl quota set <fs> <fset> <soft> <hard>  # Set fileset quota
+mmctl quota user list <target>         # List user quotas
+mmctl quota user set <target> <user> <soft> <hard> [<filesSoft> <filesHard>]
+mmctl quota user unset <target> <user> # Remove a user quota
+mmctl quota group list <target>        # List group quotas
+mmctl quota group set <target> <group> <soft> <hard> [<filesSoft> <filesHard>]
+mmctl quota group unset <target> <group>   # Remove a group quota
 mmctl token create <fs1,fs2>           # Create token
 mmctl token list                       # List tokens
 mmctl token delete <id>                # Delete token
 ```
+
+### Quotas
+
+Quota commands take a target in the `mmsetquota` `Device[:Fileset]` form:
+`fs0` addresses the filesystem, `fs0:fset1` addresses one fileset inside it.
+
+Which one to use is decided by the filesystem, not by preference. When
+`mmlsfs <fs> --perfileset-quota` reports `yes` — the default for filesystems
+serving CSI — user and group quotas exist per fileset only, and the GUI rejects
+filesystem-scoped writes with *"Per fileset quota enabled on this filesystem"*.
+Use `fs0:fset1` there. Fileset quotas themselves are always filesystem-scoped
+(`mmctl quota set fs0 fset1 ...`).
+
+Limits use GPFS syntax (`10G`, `512M`, `1T`); `0` means unlimited. Block and
+file (inode) limits are both supported — pass the optional
+`<filesSoft> <filesHard>` pair to set inode limits alongside block limits.
+GPFS has no delete-quota operation, so `unset` zeroes every limit.
+
+Quota writes are asynchronous in the GUI: it answers `202` with a job handle.
+mmctl follows the job to completion and reports `mmsetquota`'s own output, so a
+failure surfaces as a non-zero exit rather than a silent accept.
+
+Reads go through the GUI's own quota cache, which it refreshes a few seconds
+after each write. A `quota list` issued immediately after a `set` can therefore
+still show the previous limits; re-run it, or use `mmlsquota` on the cluster for
+the authoritative value. This is GUI behaviour, not proxy caching — mmapi
+forwards every request untouched.
+
+```bash
+# Per-fileset user and group quotas (per-fileset quota enabled)
+mmctl quota user set fs0:fset1 ubuntu 1G 2G
+mmctl quota group set fs0:fset1 ubuntu 1G 2G 1000 2000
+mmctl quota user list fs0:fset1
+mmctl quota user unset fs0:fset1 ubuntu
+
+# Filesystem-wide user quota (per-fileset quota disabled)
+mmctl quota user set fs0 ubuntu 1G 2G
+```
+
+Tokens authorize at filesystem granularity, so a token holding `fs0` may manage
+user and group quotas anywhere inside `fs0`.
 
 ## GPFS CSI Deployment
 
