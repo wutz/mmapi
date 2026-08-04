@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 var (
@@ -71,11 +73,26 @@ Commands:
   fileset delete <fs> <name> Delete a fileset
   fileset link <fs> <name> <path>   Link fileset
   fileset unlink <fs> <name>        Unlink fileset
-  quota list <fs>            List quotas
-  quota set <fs> <fileset> <soft> <hard>  Set quota
+  quota list <fs>[:<fileset>] [type]      List quotas (type: USR|GRP|FILESET)
+  quota set <fs> <fileset> <blockSoft> <blockHard> [<filesSoft> <filesHard>]
+                             Set a fileset quota
+  quota user list <fs>[:<fileset>]        List user quotas
+  quota user set <fs>[:<fileset>] <user> <blockSoft> <blockHard> [<filesSoft> <filesHard>]
+                             Set a user quota
+  quota user unset <fs>[:<fileset>] <user>    Remove a user quota
+  quota group list <fs>[:<fileset>]       List group quotas
+  quota group set <fs>[:<fileset>] <group> <blockSoft> <blockHard> [<filesSoft> <filesHard>]
+                             Set a group quota
+  quota group unset <fs>[:<fileset>] <group>  Remove a group quota
   token create <fs1,fs2,...>  Create access token
   token list                 List tokens
   token delete <id>          Delete token
+
+Quota targets follow the mmsetquota Device[:Fileset] convention. Filesystems
+with per-fileset quota enabled (mmlsfs --perfileset-quota) only accept user and
+group quotas at fileset scope, i.e. <fs>:<fileset>.
+
+Limits use GPFS syntax: 10G, 512M, 1T. Use 0 for unlimited.
 
 Environment:
   MMAPI_URL         mmapi server URL (default: https://localhost:8443)
@@ -325,33 +342,274 @@ func handleFileset(args []string) {
 	}
 }
 
+// quotaTarget is a "<fs>" or "<fs>:<fileset>" operand. It mirrors the
+// Device[:Fileset] operand of mmsetquota/mmlsquota so GPFS admins can reuse
+// what they already know.
+//
+// The distinction is not cosmetic: when a filesystem has --perfileset-quota
+// enabled (the default for CSI filesystems) the GUI rejects user and group
+// quota writes at filesystem scope with "Per fileset quota enabled on this
+// filesystem", and such quotas are only readable per fileset. Filesystems
+// without per-fileset quota take the bare "<fs>" form instead.
+type quotaTarget struct {
+	fs      string
+	fileset string
+}
+
+func parseQuotaTarget(s string) (quotaTarget, error) {
+	fs, fileset, hasFileset := strings.Cut(s, ":")
+	if fs == "" || (hasFileset && fileset == "") {
+		return quotaTarget{}, fmt.Errorf("invalid quota target %q: expected <fs> or <fs>:<fileset>", s)
+	}
+	return quotaTarget{fs: fs, fileset: fileset}, nil
+}
+
+// path returns the scalemgmt quota collection for the target.
+func (t quotaTarget) path() string {
+	if t.fileset != "" {
+		return "filesystems/" + t.fs + "/filesets/" + t.fileset + "/quotas"
+	}
+	return "filesystems/" + t.fs + "/quotas"
+}
+
+type quotaEntry struct {
+	QuotaType   string `json:"quotaType"`
+	ObjectName  string `json:"objectName"`
+	FilesetName string `json:"filesetName"`
+	BlockUsage  int64  `json:"blockUsage"`
+	BlockQuota  int64  `json:"blockQuota"`
+	BlockLimit  int64  `json:"blockLimit"`
+	BlockGrace  string `json:"blockGrace"`
+	FilesUsage  int64  `json:"filesUsage"`
+	FilesQuota  int64  `json:"filesQuota"`
+	FilesLimit  int64  `json:"filesLimit"`
+}
+
 func handleQuota(args []string) {
-	if len(args) < 2 {
-		fatal(fmt.Errorf("usage: mmctl quota <list|set> <fs> [args]"))
+	if len(args) == 0 {
+		fatal(fmt.Errorf("usage: mmctl quota <list|set|user|group> [args]"))
 	}
 
 	switch args[0] {
 	case "list":
-		data, err := doScaleGet("filesystems/" + args[1] + "/quotas")
+		if len(args) < 2 {
+			fatal(fmt.Errorf("usage: mmctl quota list <fs>[:<fileset>] [USR|GRP|FILESET]"))
+		}
+		target, err := parseQuotaTarget(args[1])
 		if err != nil {
 			fatal(err)
 		}
-		prettyPrint(data)
+		var quotaType string
+		if len(args) >= 3 {
+			quotaType = strings.ToUpper(args[2])
+		}
+		quotaList(target, quotaType)
 
 	case "set":
+		// Fileset quotas are addressed by filesystem plus the fileset as the
+		// quota object, so this form keeps its own positional layout.
 		if len(args) < 5 {
-			fatal(fmt.Errorf("usage: mmctl quota set <fs> <fileset> <softLimit> <hardLimit>"))
+			fatal(fmt.Errorf("usage: mmctl quota set <fs> <fileset> <blockSoft> <blockHard> [<filesSoft> <filesHard>]"))
 		}
-		body := fmt.Sprintf(`{"operationType":"setQuota","quotaType":"fileset","objectName":"%s","blockSoftLimit":"%s","blockHardLimit":"%s"}`, args[2], args[3], args[4])
-		data, err := doScalePost("filesystems/"+args[1]+"/quotas", body)
+		target, err := parseQuotaTarget(args[1])
 		if err != nil {
 			fatal(err)
 		}
-		prettyPrint(data)
+		quotaSet(target, "FILESET", args[2], args[3:])
+
+	case "user":
+		handleObjectQuota("user", "USR", args[1:])
+
+	case "group":
+		handleObjectQuota("group", "GRP", args[1:])
 
 	default:
 		fatal(fmt.Errorf("unknown quota command: %s", args[0]))
 	}
+}
+
+// handleObjectQuota implements the user and group quota subcommands, which are
+// identical apart from the quota type the GUI expects.
+func handleObjectQuota(name, quotaType string, args []string) {
+	if len(args) < 2 {
+		fatal(fmt.Errorf("usage: mmctl quota %s <list|set|unset> <fs>[:<fileset>] [args]", name))
+	}
+
+	target, err := parseQuotaTarget(args[1])
+	if err != nil {
+		fatal(err)
+	}
+
+	switch args[0] {
+	case "list":
+		quotaList(target, quotaType)
+
+	case "set":
+		if len(args) < 5 {
+			fatal(fmt.Errorf("usage: mmctl quota %s set <fs>[:<fileset>] <%s> <blockSoft> <blockHard> [<filesSoft> <filesHard>]", name, name))
+		}
+		quotaSet(target, quotaType, args[2], args[3:])
+
+	case "unset":
+		if len(args) < 3 {
+			fatal(fmt.Errorf("usage: mmctl quota %s unset <fs>[:<fileset>] <%s>", name, name))
+		}
+		// GPFS has no quota delete operation; zero limits mean "unlimited".
+		quotaSet(target, quotaType, args[2], []string{"0", "0", "0", "0"})
+
+	default:
+		fatal(fmt.Errorf("unknown quota %s command: %s", name, args[0]))
+	}
+}
+
+func quotaList(target quotaTarget, quotaType string) {
+	path := target.path()
+	if quotaType != "" {
+		path += "?filter=quotaType=" + url.QueryEscape(quotaType)
+	}
+	data, err := doScaleGet(path)
+	if err != nil {
+		fatal(err)
+	}
+
+	var resp struct {
+		Quotas []quotaEntry `json:"quotas"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		prettyPrint(data)
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "TYPE\tOBJECT\tFILESET\tBLOCK_USED\tBLOCK_SOFT\tBLOCK_HARD\tFILES_USED\tFILES_SOFT\tFILES_HARD\tGRACE")
+	for _, q := range resp.Quotas {
+		fileset := q.FilesetName
+		if fileset == "" {
+			fileset = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			q.QuotaType, q.ObjectName, fileset,
+			formatKB(q.BlockUsage), formatKB(q.BlockQuota), formatKB(q.BlockLimit),
+			q.FilesUsage, formatCount(q.FilesQuota), formatCount(q.FilesLimit),
+			q.BlockGrace)
+	}
+	w.Flush()
+}
+
+// quotaSet issues a setQuota against the target. limits is
+// [blockSoft, blockHard] with an optional [filesSoft, filesHard] pair; each
+// value takes the GPFS limit syntax (e.g. "10G", "512M", "0" for unlimited).
+func quotaSet(target quotaTarget, quotaType, objectName string, limits []string) {
+	if len(limits) < 2 {
+		fatal(fmt.Errorf("quota set requires a block soft and hard limit"))
+	}
+	body := map[string]string{
+		"operationType":  "setQuota",
+		"quotaType":      quotaType,
+		"objectName":     objectName,
+		"blockSoftLimit": limits[0],
+		"blockHardLimit": limits[1],
+	}
+	if len(limits) >= 4 {
+		body["filesSoftLimit"] = limits[2]
+		body["filesHardLimit"] = limits[3]
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		fatal(err)
+	}
+
+	data, err := doScalePost(target.path(), string(payload))
+	if err != nil {
+		fatal(err)
+	}
+	if err := waitJob(data); err != nil {
+		fatal(err)
+	}
+}
+
+// waitJob follows an asynchronous GUI job to completion. Quota writes answer
+// with 202 and a job handle, so without this the CLI would report success
+// before mmsetquota had even run — and never surface its failure.
+func waitJob(data []byte) error {
+	var resp struct {
+		Jobs []struct {
+			JobID  int64  `json:"jobId"`
+			Status string `json:"status"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil || len(resp.Jobs) == 0 {
+		// Synchronous response; show it as-is.
+		prettyPrint(data)
+		return nil
+	}
+
+	jobID := resp.Jobs[0].JobID
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		jobData, err := doScaleGet(fmt.Sprintf("jobs/%d", jobID))
+		if err != nil {
+			return err
+		}
+		var jobResp struct {
+			Jobs []struct {
+				Status string `json:"status"`
+				Result struct {
+					Commands []string `json:"commands"`
+					Stdout   []string `json:"stdout"`
+					Stderr   []string `json:"stderr"`
+					ExitCode int      `json:"exitCode"`
+				} `json:"result"`
+			} `json:"jobs"`
+		}
+		if err := json.Unmarshal(jobData, &jobResp); err != nil || len(jobResp.Jobs) == 0 {
+			return fmt.Errorf("job %d: unexpected response: %s", jobID, string(jobData))
+		}
+
+		job := jobResp.Jobs[0]
+		if job.Status == "RUNNING" {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("job %d still running after 2m", jobID)
+			}
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		for _, line := range job.Result.Stdout {
+			fmt.Println(strings.TrimSpace(line))
+		}
+		if job.Status != "COMPLETED" || job.Result.ExitCode != 0 {
+			return fmt.Errorf("job %d %s (exit %d): %s", jobID, job.Status,
+				job.Result.ExitCode, strings.Join(job.Result.Stderr, " "))
+		}
+		return nil
+	}
+}
+
+// formatKB renders a GUI block value, which is always in KiB. Zero means
+// unlimited in GPFS quota reporting.
+func formatKB(kb int64) string {
+	if kb == 0 {
+		return "-"
+	}
+	units := []string{"K", "M", "G", "T", "P"}
+	value := float64(kb)
+	i := 0
+	for value >= 1024 && i < len(units)-1 {
+		value /= 1024
+		i++
+	}
+	if value >= 100 || value == float64(int64(value)) {
+		return fmt.Sprintf("%.0f%s", value, units[i])
+	}
+	return fmt.Sprintf("%.1f%s", value, units[i])
+}
+
+func formatCount(n int64) string {
+	if n == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 func handleToken(args []string) {
