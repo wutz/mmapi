@@ -28,8 +28,8 @@ make build-linux
 ./deploy/deploy.sh root@<gpfs-node> ./mmapi ./config.local.json
 
 # Create an access token (filesystem-level).
-# MMAPI_ADMIN_TOKEN is the adminToken from config.json, and reaches only the
-# three mm*token commands.
+# MMAPI_ADMIN_TOKEN is the adminToken from the config just deployed, and
+# reaches only the three mm*token commands.
 export MMAPI_URL=https://<host>:8443
 export MMAPI_ADMIN_TOKEN=<adminToken>
 mmctl mmcrtoken fs0
@@ -82,16 +82,20 @@ placeholder the samples ship — an mmapi without an admin token would let any
 caller reach `/api/v1/tokens` and mint a token for any filesystem. Generate one
 with `openssl rand -hex 32`.
 
-`deploy/config.json` and `deploy/config-owning.json` are samples, not
-deployables. Copy one, fill it in, and deploy the copy; `deploy/deploy.sh`
-refuses a config that still holds a placeholder rather than replace a working
-config on the node with one the server will reject:
+`deploy/config.sample.json` is a sample, not a deployable. Copy it, fill it in,
+and deploy the copy; `deploy/deploy.sh` refuses a config that still holds a
+placeholder rather than replace a working config on the node with one the
+server will reject:
 
 ```bash
-cp deploy/config-owning.json config.local.json   # git-ignored
+cp deploy/config.sample.json config.local.json   # git-ignored
 openssl rand -hex 32                             # use for adminToken
 ./deploy/deploy.sh root@<gpfs-node> ./mmapi ./config.local.json
 ```
+
+`config.local.json` is what `deploy.sh` and `make deploy` use when no config is
+named, so `make deploy HOST=root@<gpfs-node>` is the whole command once it
+exists.
 
 ## API
 
@@ -286,7 +290,7 @@ user and group quotas anywhere inside `fs0`.
 ./deploy/install-gui.sh root@<gpfs-node> <password>
 
 # 2. Deploy mmapi
-cp deploy/config-owning.json config.local.json && $EDITOR config.local.json
+cp deploy/config.sample.json config.local.json && $EDITOR config.local.json
 ./deploy/deploy.sh root@<gpfs-node> ./mmapi ./config.local.json
 
 # 3. Create mmapi token for CSI
@@ -318,6 +322,14 @@ kubectl apply -f deploy/csi/example-pod.yaml
 ## Development
 
 ```bash
-make build    # Build mmapi + mmctl
-make test     # Run tests
+make build        # Build mmapi + mmctl
+make build-linux  # Build both for the cluster nodes
+make test         # Run tests
+make vet          # go vet
+make deploy HOST=root@<gpfs-node> [CONFIG=<path>]
 ```
+
+CI runs `gofmt`, `make vet`, `make test` and `make build-linux` on every push to
+`main` and every pull request. The test run includes the guard that
+`deploy/config.sample.json` stays unusable, so a real credential committed there
+fails the build.
