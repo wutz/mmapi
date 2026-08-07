@@ -30,6 +30,10 @@ type TokenInfo struct {
 // (e.g. no allowed filesystems), which the caller can map to a 400 response.
 var ErrInvalidTokenRequest = fmt.Errorf("invalid token request")
 
+// ErrTokenNotFound is returned by Delete when no token carries the given id,
+// which the caller can map to a 404 response.
+var ErrTokenNotFound = fmt.Errorf("token not found")
+
 func (t *Token) Info() *TokenInfo {
 	return &TokenInfo{
 		ID:        t.ID,
@@ -88,22 +92,31 @@ func (ts *TokenStore) Validate(secret string) (*Token, bool) {
 	return t, ok
 }
 
+// Delete removes the token with the given id. An id no token carries is
+// reported rather than ignored: a silent success tells an operator revoking a
+// leaked secret that it is gone when it is still live.
 func (ts *TokenStore) Delete(id string) error {
 	ts.mu.Lock()
+	found := false
 	for secret, t := range ts.tokens {
 		if t.ID == id {
 			delete(ts.tokens, secret)
+			found = true
 			break
 		}
 	}
 	ts.mu.Unlock()
+	if !found {
+		return ErrTokenNotFound
+	}
 	return ts.save()
 }
 
 func (ts *TokenStore) List() []*TokenInfo {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
-	var result []*TokenInfo
+	// Non-nil so an empty store encodes as [] rather than null.
+	result := make([]*TokenInfo, 0, len(ts.tokens))
 	for _, t := range ts.tokens {
 		result = append(result, t.Info())
 	}

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,6 +57,19 @@ func TestDeleteToken(t *testing.T) {
 	_, ok := store.Validate(token.Secret)
 	if ok {
 		t.Fatal("expected token to be deleted")
+	}
+}
+
+func TestDeleteUnknownTokenReported(t *testing.T) {
+	store := newTestStore(t)
+	token, _ := store.Create([]string{"gpfs0"})
+
+	if err := store.Delete("no-such-id"); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("expected ErrTokenNotFound, got %v", err)
+	}
+	// The store is untouched: a failed delete must not drop anything else.
+	if _, ok := store.Validate(token.Secret); !ok {
+		t.Fatal("expected the existing token to survive a failed delete")
 	}
 }
 

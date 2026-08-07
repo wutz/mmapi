@@ -23,8 +23,9 @@ make build-linux
 # Deploy GPFS GUI (if not installed)
 ./deploy/install-gui.sh root@<gpfs-node> <admin-password>
 
-# Deploy mmapi proxy
-./deploy/deploy.sh root@<gpfs-node> ./mmapi ./deploy/config-owning.json
+# Deploy mmapi proxy (config.local.json is your filled-in copy of the sample;
+# see Configuration)
+./deploy/deploy.sh root@<gpfs-node> ./mmapi ./config.local.json
 
 # Create an access token (filesystem-level).
 # MMAPI_ADMIN_TOKEN is the adminToken from config.json, and reaches only the
@@ -56,8 +57,8 @@ The same token can be created over the API directly; see
   "tls": true,
   "guiUrl": "https://127.0.0.1:443",
   "guiUsername": "admin",
-  "guiPassword": "Admin@123",
-  "adminToken": "mmapi_admin_ChangeMe_2026",
+  "guiPassword": "<gui-password>",
+  "adminToken": "<generated-token>",
   "guiVerifyTLS": false
 }
 ```
@@ -72,10 +73,25 @@ The same token can be created over the API directly; see
 | `guiUrl` | Upstream GPFS GUI URL | (required) |
 | `guiUsername` | GUI admin username | (required) |
 | `guiPassword` | GUI admin password | (required) |
-| `adminToken` | Bearer token protecting the token management API (empty = open) | (empty) |
+| `adminToken` | Bearer token protecting the token management API | (required) |
 | `guiVerifyTLS` | Verify the upstream GUI TLS certificate | `false` |
 
-> ⚠️ Set a strong `adminToken` before exposing the management API. When empty, `/api/v1/tokens` is unauthenticated.
+`guiUrl`, `guiUsername`, `guiPassword` and `adminToken` are all mandatory, and
+mmapi exits at startup if one is missing or still carries the `CHANGE_ME`
+placeholder the samples ship — an mmapi without an admin token would let any
+caller reach `/api/v1/tokens` and mint a token for any filesystem. Generate one
+with `openssl rand -hex 32`.
+
+`deploy/config.json` and `deploy/config-owning.json` are samples, not
+deployables. Copy one, fill it in, and deploy the copy; `deploy/deploy.sh`
+refuses a config that still holds a placeholder rather than replace a working
+config on the node with one the server will reject:
+
+```bash
+cp deploy/config-owning.json config.local.json   # git-ignored
+openssl rand -hex 32                             # use for adminToken
+./deploy/deploy.sh root@<gpfs-node> ./mmapi ./config.local.json
+```
 
 ## API
 
@@ -104,7 +120,7 @@ config field), e.g. `-H "Authorization: Bearer <adminToken>"`.
 |--------|------|-------------|
 | POST | `/api/v1/tokens` | Create token |
 | GET | `/api/v1/tokens` | List tokens (secret omitted) |
-| DELETE | `/api/v1/tokens/{id}` | Delete token |
+| DELETE | `/api/v1/tokens/{id}` | Delete token (404 if no token carries that id) |
 
 **Create token request body:**
 ```json
@@ -181,6 +197,8 @@ Both variables can be exported at once — mmctl picks the right one per command
 | `unauthorized` | `MMAPI_TOKEN` is unset, or names a token the server does not know. Tokens live in `dataDir` (default `/var/lib/mmapi`); wiping it on redeploy invalidates every secret issued before, so reissue with `mmcrtoken`. |
 | `access denied: filesystem "fs0" not allowed` | The token is valid but its `allowedFs` does not list that filesystem. `mmlstoken` shows what each token covers. |
 | `connection refused`, `no route to host` | `MMAPI_URL` still points at the default `localhost:8443`. It must name the node running mmapi whenever mmctl runs elsewhere. |
+| `admin authentication required` | `MMAPI_ADMIN_TOKEN` is unset or does not match the server's `adminToken`. Only the three `mm*token` commands read it. |
+| `token not found` from `mmdeltoken` | No token carries that id — check `mmlstoken`. The secret being revoked is still live. |
 
 Commands that address no filesystem — `mmlscluster` among them — skip the
 `allowedFs` check, so any valid token runs them. An `unauthorized` from
@@ -268,7 +286,8 @@ user and group quotas anywhere inside `fs0`.
 ./deploy/install-gui.sh root@<gpfs-node> <password>
 
 # 2. Deploy mmapi
-./deploy/deploy.sh root@<gpfs-node> ./mmapi ./deploy/config-owning.json
+cp deploy/config-owning.json config.local.json && $EDITOR config.local.json
+./deploy/deploy.sh root@<gpfs-node> ./mmapi ./config.local.json
 
 # 3. Create mmapi token for CSI
 curl -sk -X POST https://<host>:8443/api/v1/tokens \
