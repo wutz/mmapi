@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -40,17 +41,18 @@ func main() {
 	scaleProxy := proxy.New(cfg, tokenStore)
 	mux.Handle("/scalemgmt/", scaleProxy)
 
-	// Admin auth middleware for token management
+	// Admin auth middleware for token management. config.Load guarantees a
+	// non-empty admin token, so there is no unauthenticated path here: an
+	// operator cannot disable the check by leaving the field out.
+	expected := []byte("Bearer " + cfg.AdminToken)
 	adminAuth := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if cfg.AdminToken != "" {
-				authHeader := r.Header.Get("Authorization")
-				if authHeader != "Bearer "+cfg.AdminToken {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusUnauthorized)
-					w.Write([]byte(`{"error":"admin authentication required"}`))
-					return
-				}
+			got := []byte(r.Header.Get("Authorization"))
+			if subtle.ConstantTimeCompare(got, expected) != 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error":"admin authentication required"}`))
+				return
 			}
 			next(w, r)
 		}
@@ -86,6 +88,10 @@ func main() {
 	mux.HandleFunc("DELETE /api/v1/tokens/{id}", adminAuth(func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if err := tokenStore.Delete(id); err != nil {
+			if errors.Is(err, auth.ErrTokenNotFound) {
+				http.Error(w, `{"error":"token not found"}`, http.StatusNotFound)
+				return
+			}
 			http.Error(w, `{"error":"failed to delete token"}`, http.StatusInternalServerError)
 			return
 		}

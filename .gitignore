@@ -6,3 +6,6 @@
 *.out
 .env
 local.db
+.cindy-worktrees/
+# Site configuration carrying real credentials; deploy/config*.json are samples.
+/config.local.json
