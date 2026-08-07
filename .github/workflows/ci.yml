@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Track the toolchain go.mod asks for, so CI fails when the two drift
+          # rather than silently building with something else.
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: vet
+        run: make vet
+
+      # Covers the guard that deploy/config.sample.json stays unusable
+      # (TestDeploySamplesAreNotUsable), so a real credential committed there
+      # fails the build.
+      - name: test
+        run: make test
+
+      - name: build
+        run: make build-linux
