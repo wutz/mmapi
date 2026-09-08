@@ -43,6 +43,7 @@ func (t *Token) Info() *TokenInfo {
 
 type TokenStore struct {
 	mu     sync.RWMutex
+	saveMu sync.Mutex
 	tokens map[string]*Token
 	cfg    *config.Config
 	path   string
@@ -150,6 +151,8 @@ func (ts *TokenStore) load() {
 }
 
 func (ts *TokenStore) save() error {
+	ts.saveMu.Lock()
+	defer ts.saveMu.Unlock()
 	ts.mu.RLock()
 	var tokens []*Token
 	for _, t := range ts.tokens {
@@ -161,7 +164,7 @@ func (ts *TokenStore) save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(ts.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(ts.path), 0o700); err != nil {
 		return err
 	}
 	// Write to a temp file and rename for an atomic replacement so a crash
