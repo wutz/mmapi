@@ -102,8 +102,13 @@ func main() {
 	handler := logMiddleware(mux)
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Port),
-		Handler: handler,
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
@@ -194,7 +199,7 @@ func ensureTLSCerts(cfg *config.Config) (string, string, error) {
 	if err := os.MkdirAll(filepath.Dir(certFile), 0o755); err != nil {
 		return "", "", err
 	}
-	certOut, err := os.Create(certFile)
+	certOut, err := os.OpenFile(certFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return "", "", err
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -73,6 +74,10 @@ const placeholder = "CHANGE_ME"
 // that. Placeholder values are rejected for the same reason a missing one is —
 // they are public.
 func (c *Config) Validate() error {
+	u, err := url.Parse(c.GuiURL)
+	if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("guiUrl must be an absolute http or https URL")
+	}
 	required := []struct {
 		field string
 		value string
