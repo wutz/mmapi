@@ -50,6 +50,7 @@ func New(cfg *config.Config, tokens *auth.TokenStore) http.Handler {
 		proxy:  proxy,
 		tokens: tokens,
 		cfg:    cfg,
+		policy: newPolicy(cfg),
 	}
 }
 
@@ -57,6 +58,7 @@ type handler struct {
 	proxy  *httputil.ReverseProxy
 	tokens *auth.TokenStore
 	cfg    *config.Config
+	policy *policy
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +67,15 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		token := h.authenticate(r)
 		if token == nil {
 			writeStatus(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		// Endpoint allowlist: only the calls CSI and mmctl make are forwarded,
+		// so a token cannot reach cluster level changes or destructive
+		// filesystem calls even on a filesystem it owns.
+		if !h.policy.allows(r.Method, r.URL.Path) {
+			slog.Warn("endpoint denied", "method", r.Method, "path", r.URL.Path, "token", token.ID)
+			writeStatus(w, http.StatusForbidden, "endpoint not allowed")
 			return
 		}
 
@@ -77,6 +88,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeStatus(w, http.StatusForbidden, err.Error())
 				return
 			}
+		}
+
+		// Audit every state change with the token that made it; the access log
+		// only has the client address.
+		if !readOnly(r.Method) {
+			slog.Info("audit", "method", r.Method, "path", r.URL.Path, "token", token.ID)
 		}
 
 		h.proxy.ServeHTTP(w, r)

@@ -27,7 +27,16 @@ type Config struct {
 	// verified. Defaults to false for compatibility with self-signed GUI certs;
 	// enable in trusted environments to prevent man-in-the-middle attacks.
 	GuiVerifyTLS bool `json:"guiVerifyTLS"`
+	// AllowFeatures opts in to proxy endpoints that change cluster or
+	// filesystem state and that CSI only needs in optional modes: "mount",
+	// "policies" and "afm". They are denied by default for every token.
+	AllowFeatures []string `json:"allowFeatures"`
 }
+
+// knownFeatures mirrors the names internal/proxy accepts. It is duplicated
+// here so a typo in the config fails at start up instead of silently leaving a
+// feature disabled.
+var knownFeatures = map[string]bool{"mount": true, "policies": true, "afm": true}
 
 func Load() (*Config, error) {
 	cfg := &Config{
@@ -77,6 +86,11 @@ func (c *Config) Validate() error {
 	u, err := url.Parse(c.GuiURL)
 	if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return fmt.Errorf("guiUrl must be an absolute http or https URL")
+	}
+	for _, f := range c.AllowFeatures {
+		if !knownFeatures[f] {
+			return fmt.Errorf("allowFeatures: unknown feature %q (want mount, policies or afm)", f)
+		}
 	}
 	required := []struct {
 		field string
