@@ -106,3 +106,17 @@ func TestLoadMissingFileIsAnError(t *testing.T) {
 		t.Fatal("expected Load to fail when the config file is absent")
 	}
 }
+
+func TestValidateAllowFeatures(t *testing.T) {
+	cfg := &Config{
+		GuiURL: "https://gui:443", GuiUsername: "admin", GuiPassword: "pw", AdminToken: "tok",
+		AllowFeatures: []string{"mount", "afm"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("known features rejected: %v", err)
+	}
+	cfg.AllowFeatures = []string{"mount", "mounts"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("unknown feature accepted")
+	}
+}

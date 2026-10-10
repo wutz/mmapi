@@ -101,7 +101,26 @@ exists.
 
 ### Proxied Endpoints (Scale GUI compatible)
 
-All `/scalemgmt/v2/` requests are proxied to the GPFS GUI. Authentication uses Basic Auth where the password is an mmapi token.
+Allowlisted `/scalemgmt/v2/` requests are proxied to the GPFS GUI. Authentication uses Basic Auth where the password is an mmapi token.
+
+Only the method and path combinations the IBM Storage Scale CSI driver and
+`mmctl` use are forwarded (`internal/proxy/policy.go`). Everything else returns
+`403 endpoint not allowed`, even on a filesystem the token owns. That covers
+cluster level changes (nodes, config, NSDs, creating a filesystem) and
+destructive filesystem calls (`DELETE`/`PUT /filesystems/{fs}`). Cluster level
+reads that CSI needs at start up (`cluster`, `config`, `info`, `nodes`,
+`jobs/{id}`) are allowed as `GET` only.
+
+Optional endpoints are off by default and enabled for the whole proxy with
+`allowFeatures` in the config:
+
+| Feature | Endpoints |
+|---------|-----------|
+| `mount` | `PUT /filesystems/{fs}/mount`, `/unmount` |
+| `policies` | `PUT /filesystems/{fs}/policies` |
+| `afm` | AFM / COS cache volumes: `filesets/cos`, `bucket/keys`, `nodes/afm/mapping` |
+
+State changing requests are logged as `audit` lines with the token id.
 
 ### Access Control
 
